@@ -108,7 +108,7 @@ Every identity has a public **invite link** `https://<site>/?ref=<code>` (12-cha
 | Rule | Detail |
 |---|---|
 | The reason to invite | When a friend joins through your link and **finishes their first real test**, you earn **+1 Test Credit** (= one free test of your own product). The friend still gets the normal starter credit. The card says this in plain words — it is never a hidden incentive. |
-| Cap | 3 rewarded referrals per referrer. |
+| Cap | 3 rewarded referrals per referrer, counted from the permanent ledger — deleting invitees later never re-opens the cap. |
 | Idempotent | One referral per invitee, one reward per invitee (primary key + unique ledger index); payment is a separate idempotent settlement run on page loads (like expiry refunds), not inside `submit_test`. |
 | Which test counts | The invitee's test must be on **someone else's** campaign, never the referrer's own (otherwise the referrer could time the invitee's test against the feedback they receive and unmask the tester, and an alt identity could "complete" its owner's campaign to harvest credits). |
 | Who can be referred | Only brand-new participants: refused after the first earned reward, self-referral and mutual referral refused; the first link a visitor opens wins. |

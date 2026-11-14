@@ -192,7 +192,8 @@ begin
      where f.rewarded_at is null
        and f.settle_failures < 3
        -- a referrer already at the cap can never be paid again: keep those rows out of the 25-row window
-       and (select count(*) from public.referrals x where x.referrer_id = f.referrer_id and x.rewarded_at is not null) < c_cap
+       -- (counted from the durable ledger, not from referrals rows: deleting paid invitees must not re-open the cap)
+       and (select count(*) from public.credit_ledger g where g.user_id = f.referrer_id and g.reason = 'referral_reward') < c_cap
        -- the invitee finished a test (after the claim) on a campaign that is NOT the referrer's own
        and exists (select 1 from public.credit_ledger l
                     where l.user_id = f.referee_id and l.reason = 'test_reward' and l.created_at >= f.created_at
@@ -209,7 +210,7 @@ begin
 
     begin
       -- Cap again, now under the referrer's profile lock, so concurrent settlers cannot overshoot it.
-      select count(*) into v_rewarded from public.referrals x where x.referrer_id = r.referrer_id and x.rewarded_at is not null;
+      select count(*) into v_rewarded from public.credit_ledger g where g.user_id = r.referrer_id and g.reason = 'referral_reward';
       if v_rewarded >= c_cap then
         continue;
       end if;
@@ -250,7 +251,7 @@ as $$
                      and exists (select 1 from public.credit_ledger l
                                   where l.user_id = r.referee_id and l.reason = 'test_reward' and l.created_at >= r.created_at
                                     and not exists (select 1 from public.campaigns c where c.id = l.campaign_id and c.owner_id = r.referrer_id))),
-    'rewarded',  (select count(*) from public.referrals r where r.referrer_id = auth.uid() and r.rewarded_at is not null)
+    'rewarded',  (select count(*) from public.credit_ledger g where g.user_id = auth.uid() and g.reason = 'referral_reward')
   )
 $$;
 

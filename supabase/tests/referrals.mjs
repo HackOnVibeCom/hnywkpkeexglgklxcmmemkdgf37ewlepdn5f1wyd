@@ -168,6 +168,8 @@ console.log('\n[rows that can never be paid cannot starve the others]');
   for (let i = 0; i < 3; i++) { // boss already at the cap (3 rewarded referrals)
     const e = await mk();
     await q(`insert into public.referrals (referee_id, referrer_id, created_at, rewarded_at) values ($1, $2, now() - interval '3 hour', now())`, [e, boss]);
+    await q(`insert into public.credit_ledger (user_id, delta, reason, referee_id) values ($1, 1, 'referral_reward', $2)`, [boss, e]);
+    await q('update public.profiles set credit_balance = credit_balance + 1 where id = $1', [boss]);
   }
   for (let i = 0; i < 30; i++) {
     const e = await mk();
@@ -180,7 +182,7 @@ console.log('\n[rows that can never be paid cannot starve the others]');
   await q(`insert into public.credit_ledger (user_id, delta, reason) values ($1, 1, 'test_reward')`, [lateE]);
   await q('update public.profiles set credit_balance = credit_balance + 1 where id = $1', [lateE]);
   ok((await settleRef(stranger)) === 1 && (await ledgerRows(lateR, 'referral_reward')).length === 1, '30 over-cap rows ahead in the queue do not stop a later, legitimate referral from being paid on the first call');
-  ok((await ledgerRows(boss, 'referral_reward')).length === 0, 'the capped referrer gets nothing more');
+  ok((await ledgerRows(boss, 'referral_reward')).length === 3, 'the capped referrer gets nothing more (still exactly 3 reward rows)');
 
   // (b) 26 permanently failing rows (a reward row already exists) queued before another legitimate referral.
   const bad = [];
@@ -226,14 +228,53 @@ console.log('\n[deleting a paid invitee]');
   await claim(inv, await codeOf(ref));
   await completeTest(inv);
   ok((await settleRef(stranger)) >= 1 && (await ledgerRows(ref, 'referral_reward')).length === 1, 'setup: a paid referral exists');
+  const orphans = async () => ({
+    refRows: (await q(`select count(*)::int n from public.referrals r where not exists (select 1 from public.profiles p where p.id=r.referee_id) or not exists (select 1 from public.profiles p where p.id=r.referrer_id)`))[0].n,
+    ledgerRows: (await q(`select count(*)::int n from public.credit_ledger l where not exists (select 1 from public.profiles p where p.id=l.user_id)`))[0].n,
+    drift: (await q(`select p.id from public.profiles p left join public.credit_ledger l on l.user_id = p.id group by p.id having p.credit_balance <> coalesce(sum(l.delta),0)`)).length,
+  });
+  const before = await bal(ref);
   let err = null;
-  try { await q('delete from public.profiles where id = $1', [inv]); } catch (e) { err = e; }
-  ok(err === null, 'the paid invitee can be deleted', err?.message);
+  try { await q('delete from auth.users where id = $1', [inv]); } catch (e) { err = e; }   // the real path: auth user -> profile -> everything
+  ok(err === null, 'the paid invitee can be deleted (auth.users -> profiles cascade)', err?.message);
   ok((await q('select count(*)::int n from public.referrals where referee_id=$1', [inv]))[0].n === 0, 'their referral row is gone with them');
-  ok((await ledgerRows(ref, 'referral_reward')).length === 1 && (await bal(ref)) >= 1, 'the referrer keeps the credit they earned');
+  ok((await q('select count(*)::int n from public.credit_ledger where user_id=$1', [inv]))[0].n === 0, 'their own ledger rows are gone with them (existing cascade)');
+  ok((await ledgerRows(ref, 'referral_reward')).length === 1 && (await bal(ref)) === before, 'the referrer keeps the credit and the ledger row they earned (balance unchanged)');
+  ok((await ledgerRows(ref, 'referral_reward'))[0].referee_id === inv, 'the reward row still names the (now deleted) invitee id — an opaque uuid no client can read');
+  let o = await orphans();
+  ok(o.refRows === 0 && o.ledgerRows === 0 && o.drift === 0, 'no orphaned referral rows, ledger rows or balance drift after deleting an invitee', JSON.stringify(o));
+  ok(await failsWith(() => q(`insert into public.credit_ledger (user_id, delta, reason, referee_id) values ($1, 1, 'referral_reward', $2)`, [ref, inv]), 'credit_ledger_one_referral_reward'), 'the deleted invitee can never be paid for again (unique index outlives the profile)');
+  ok((await settleRef(stranger)) === 0, 'settlement after the deletion pays nothing and does not error');
+  const m = await mine(ref);
+  ok(m.invited === 0 && m.rewarded === 1, 'invited drops with the deleted invitee, but rewarded still counts the credit already earned (it is read from the ledger)', JSON.stringify(m));
+
+  // Deleting paid invitees must never re-open the cap of 3: the cap is counted from the durable ledger.
+  const capR = await mk(); const capCode = await codeOf(capR);
+  const paidInv = [];
+  for (let i = 0; i < 3; i++) { const u = await mk(); await claim(u, capCode); await completeTest(u); paidInv.push(u); }
+  const fx = await mk(); await claim(fx, capCode); await completeTest(fx);  // a 4th, qualifying but over the cap
+  let paidNow = 0; for (let i = 0; i < 4; i++) paidNow += await settleRef(stranger);
+  ok(paidNow === 3 && (await ledgerRows(capR, 'referral_reward')).length === 3, 'cap reached: 3 paid, the 4th is not');
+  for (const u of paidInv.concat([fx])) await q('delete from auth.users where id = $1', [u]);
+  const late = await mk(); await claim(late, capCode); await completeTest(late);
+  let paidAfter = 0; for (let i = 0; i < 4; i++) paidAfter += await settleRef(stranger);
+  ok(paidAfter === 0 && (await ledgerRows(capR, 'referral_reward')).length === 3, 'after ALL of those invitees are deleted, a new qualifying invitee still pays nothing (the cap of 3 stays closed)', `paid ${paidAfter}`);
+  ok((await mine(capR)).rewarded === 3, 'and get_my_referrals still reports rewarded 3');
+
+  // Deleting a referrer: their invitees keep working; nothing dangling remains.
+  const ref2 = await mk(); const inv2 = await mk();
+  await claim(inv2, await codeOf(ref2));
+  const b2 = await bal(inv2);
   let err2 = null;
-  try { await q('delete from public.profiles where id = $1', [ref]); } catch (e) { err2 = e; }
-  ok(err2 === null, 'a referrer with rewards can be deleted too', err2?.message);
+  try { await q('delete from auth.users where id = $1', [ref2]); } catch (e) { err2 = e; }
+  ok(err2 === null, 'a referrer can be deleted', err2?.message);
+  o = await orphans();
+  ok(o.refRows === 0 && o.ledgerRows === 0 && o.drift === 0, 'no orphaned rows after deleting a referrer', JSON.stringify(o));
+  ok((await bal(inv2)) === b2, 'the invitee’s own credits are untouched');
+  await completeTest(inv2);
+  ok((await settleRef(stranger)) === 0, 'the invitee’s later test pays nobody (the referral died with the referrer) and nothing errors');
+  const r3 = await mk();
+  ok((await claim(inv2, await codeOf(r3))).reason === 'already_active', 'and, having earned a reward, the invitee cannot be re-referred');
 }
 
 summary();
