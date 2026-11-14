@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { CONFIG_REASON_TEXT, config } from '../lib/config';
+import { captchaEnabled } from '../lib/turnstile';
 import { Alert, Button, Spinner } from './ui';
 
 /**
@@ -13,7 +14,19 @@ export function SessionGate({ children }: { children: ReactNode }) {
   const { status, error, retry } = useAuth();
 
   if (status === 'ready') return <>{children}</>;
-  if (status === 'loading') return <Spinner label="Setting up your anonymous session…" />;
+  if (status === 'loading') {
+    return (
+      <div>
+        <Spinner label="Setting up your anonymous session…" />
+        {captchaEnabled && (
+          <p className="text-sm text-slate-500" data-testid="captcha-hint">
+            If a “Verify you are human” box appears at the bottom of the page, tick it to continue. This only happens on your
+            first visit.
+          </p>
+        )}
+      </div>
+    );
+  }
 
   if (status === 'unconfigured') {
     const reason = !config.configured ? CONFIG_REASON_TEXT[config.reason] : '';

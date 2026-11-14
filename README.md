@@ -141,6 +141,12 @@ Anonymous sign-in is the only place identities are created, so it is the place f
 2. Put the **site key** in `VITE_TURNSTILE_SITE_KEY` (`.env.local` for dev, the committed `.env.production` for the deploy). It is public by design. For local development Cloudflare publishes an always-pass test key: `1x00000000000000000000AA`.
 3. Deploy the frontend, **then** enable it server-side: Supabase dashboard → Authentication → Attack Protection → *Enable CAPTCHA protection* → Turnstile → paste the **secret** there. The secret never goes into this repo or the browser bundle.
 
+**Troubleshooting (what the visitor and you will see).** The app shows Cloudflare's code in the error message.
+- `600010` (the `600*` family, Cloudflare: "generic challenge failure — bot behavior detected"): Cloudflare itself refused this browser session. It is not a site/hostname/key error (those are 110xxx/400xxx and fail before any click) and not our CSP. The app retries twice with `turnstile.reset()`, then shows the code and a *Try again* button. Typical causes: private windows, VPN/proxy, privacy extensions or hardened browsers, no GPU/WebGL, automated browsers. Cloudflare's own always-fail test key `2x00000000000000000000AB` produces exactly this code, and its always-pass key `1x00000000000000000000AA` signs in through the same code path.
+- `110200` hostname not allowed / `110100`, `110110` bad sitekey / `400*` key problems: configuration; never retried; the message says it is a site problem. Fix in Cloudflare → Turnstile → the widget → Hostname Management.
+- `CSP violation ... Connecting to 'data:,'` in the console comes from the *challenge frame's own* policy on challenges.cloudflare.com and is harmless. This site sends **no** Content-Security-Policy. If you add one later, allow `https://challenges.cloudflare.com` in `script-src`, `frame-src` and `connect-src`; do not try to silence those `data:,` messages.
+- The Cloudflare dashboard (Turnstile → widget → Analytics) shows solve/fail counts and is the place to check whether real visitors are being failed.
+
 **Order matters:** if Supabase CAPTCHA is switched on before the compatible frontend is live, every new visitor's anonymous sign-in fails. With no site key set the app behaves exactly as before.
 
 ## Tests

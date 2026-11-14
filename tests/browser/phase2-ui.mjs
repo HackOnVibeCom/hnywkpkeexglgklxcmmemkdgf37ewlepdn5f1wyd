@@ -207,8 +207,15 @@ console.log('\n[P4] dashboard: results card + referral stats');
 
 // ───────────── Cloudflare Turnstile ─────────────
 console.log('\n[P5] Turnstile on first sign-in');
-const FAKE_OK = `window.turnstile = { render(el, o) { window.__rendered = { sitekey: o.sitekey, appearance: o.appearance }; setTimeout(() => o.callback('TURNSTILE-TEST-TOKEN'), 40); return 'w1'; }, remove(id) { window.__removed = id; } };`;
-const FAKE_FAIL = `window.turnstile = { render(el, o) { setTimeout(() => o['error-callback']('600010'), 40); return 'w2'; }, remove() {} };`;
+const FAKE_OK = `window.turnstile = { render(el, o) { window.__rendered = { sitekey: o.sitekey, appearance: o.appearance }; setTimeout(() => o.callback('TURNSTILE-TEST-TOKEN'), 40); return 'w1'; }, remove(id) { window.__removed = id; }, reset() { window.__resets = (window.__resets || 0) + 1; } };`;
+// Cloudflare "generic challenge failure" every time, even after reset()
+const FAKE_FAIL = `window.turnstile = { render(el, o) { window.__o = o; window.__resets = 0; setTimeout(() => o['error-callback']('600010'), 40); return 'w2'; }, reset() { window.__resets++; setTimeout(() => window.__o['error-callback']('600010'), 40); }, remove() {} };`;
+// fails once with 600010, passes after the automatic reset()
+const FAKE_FLAKY = `window.turnstile = { render(el, o) { window.__o = o; window.__resets = 0; setTimeout(() => o['error-callback']('600010'), 40); return 'w3'; }, reset() { window.__resets++; setTimeout(() => window.__o.callback('TURNSTILE-RETRY-TOKEN'), 40); }, remove() {} };`;
+// configuration error: hostname not allowed
+const FAKE_CONFIG = `window.turnstile = { render(el, o) { window.__resets = 0; setTimeout(() => o['error-callback']('110200'), 40); return 'w4'; }, reset() { window.__resets++; }, remove() {} };`;
+// never answers (visitor has not ticked the box yet)
+const FAKE_PENDING = `window.turnstile = { render() { return 'w5'; }, reset() {}, remove() {} };`;
 const fulfillJs = (body) => (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body });
 {
   const be = createBackend();
@@ -253,7 +260,52 @@ const fulfillJs = (body) => (route) => route.fulfill({ status: 200, contentType:
   await ctx.route('https://challenges.cloudflare.com/**', fulfillJs(FAKE_FAIL));
   await page.goto(CAPTCHA + '/discover');
   await page.getByText('Could not start your anonymous session').waitFor({ timeout: 20000 });
-  ok(await page.getByText(/The human check failed/).isVisible() && be.s.signups === 0, 'a failed challenge shows a retryable error and creates no account');
+  ok(await page.getByText(/could not be completed \(Cloudflare code 600010\)/).isVisible() && be.s.signups === 0, 'a failing challenge ends in a clear error that includes Cloudflare’s code, and creates no account', (await page.locator('body').innerText()).slice(0, 300));
+  ok((await page.evaluate(() => window.__resets)) === 2, 'it retried exactly twice with turnstile.reset() before giving up (3 attempts)');
+  ok((await page.getByRole('button', { name: 'Try again' }).count()) === 1 && (await page.getByTestId('turnstile-host').count()) === 0, 'the Try again button is offered and the widget is cleaned up');
+  ok(!(await page.locator('body').innerText()).includes('The human check failed'), 'the old generic message is gone');
+  await ctx.close();
+}
+{
+  const be = createBackend();
+  const { ctx, page } = await newPage(browser, 1280);
+  await be.install(ctx);
+  await ctx.route('https://challenges.cloudflare.com/**', fulfillJs(FAKE_FLAKY));
+  await page.goto(CAPTCHA + '/discover');
+  await page.getByText('Acme Invoicing').waitFor({ timeout: 20000 });
+  ok(be.s.signups === 1 && signupBody(be)?.gotrue_meta_security?.captcha_token === 'TURNSTILE-RETRY-TOKEN', 'a transient 600010 is retried automatically and the second token signs the visitor in');
+  ok((await page.evaluate(() => window.__resets)) === 1, 'exactly one reset() was needed');
+  await ctx.close();
+}
+{
+  const be = createBackend();
+  const { ctx, page } = await newPage(browser, 1280);
+  await be.install(ctx);
+  await ctx.route('https://challenges.cloudflare.com/**', fulfillJs(FAKE_CONFIG));
+  await page.goto(CAPTCHA + '/discover');
+  await page.getByText('Could not start your anonymous session').waitFor({ timeout: 20000 });
+  ok(await page.getByText(/not set up correctly for this website \(Cloudflare code 110200\)/).isVisible(), 'a configuration error (110200 hostname not allowed) is reported as such, with its code', (await page.locator('body').innerText()).slice(0, 300));
+  ok((await page.evaluate(() => window.__resets)) === 0 && be.s.signups === 0, 'configuration errors are NOT retried and create no account');
+  await ctx.close();
+}
+{
+  const be = createBackend();
+  const { ctx, page } = await newPage(browser, 1280);
+  await be.install(ctx);
+  await ctx.route('https://challenges.cloudflare.com/**', fulfillJs(FAKE_PENDING));
+  await page.goto(CAPTCHA + '/discover');
+  await page.getByTestId('captcha-hint').waitFor({ timeout: 20000 });
+  ok(/Verify you are human/.test(await page.getByTestId('captcha-hint').innerText()) && (await page.getByText('Setting up your anonymous session…').isVisible()), 'while the check is pending the visitor is told to tick the box at the bottom of the page');
+  ok(be.s.signups === 0, 'no account exists until the check is passed');
+  await ctx.close();
+}
+{
+  const be = createBackend();
+  const { ctx, page } = await newPage(browser, 1280);
+  await be.install(ctx);
+  await page.goto(ENV + '/discover');
+  await page.getByText('Acme Invoicing').waitFor();
+  ok((await page.getByTestId('captcha-hint').count()) === 0, 'without a site key the hint never appears');
   await ctx.close();
 }
 {

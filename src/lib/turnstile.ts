@@ -6,6 +6,11 @@
 //   (Authentication -> Attack Protection), never in this repo or the browser bundle.
 // * Only first visits pay the cost: a returning browser already has a session and never calls this.
 // * `appearance: 'interaction-only'`: the widget stays invisible unless Cloudflare needs the visitor to click.
+//
+// Errors: Cloudflare reports a numeric code to `error-callback`. 1xxxxx/4xxxxx codes (invalid sitekey, hostname
+// not allowed, ...) are CONFIGURATION errors and fail immediately. Other codes (e.g. 300xxx/600xxx "generic
+// challenge failure") are retried a couple of times with `turnstile.reset()` before giving up; the final error
+// carries the code so it can be shown to the visitor and reported to the site owner.
 
 const SITE_KEY = (import.meta.env.VITE_TURNSTILE_SITE_KEY ?? '').trim();
 
@@ -17,10 +22,13 @@ interface TurnstileApi {
     options: {
       sitekey: string;
       appearance?: 'always' | 'execute' | 'interaction-only';
+      retry?: 'auto' | 'never';
       callback: (token: string) => void;
-      'error-callback': (code?: string) => void;
+      'error-callback': (code?: string) => boolean | void;
+      'timeout-callback'?: () => void;
     },
   ) => string;
+  reset?: (widgetId: string) => void;
   remove: (widgetId: string) => void;
 }
 
@@ -30,9 +38,29 @@ declare global {
   }
 }
 
+export type CaptchaFailure = 'script' | 'config' | 'challenge' | 'timeout';
+
+/** A human-check failure. `code` is Cloudflare's own error code (when it gave one). */
+export class CaptchaError extends Error {
+  constructor(
+    public readonly kind: CaptchaFailure,
+    public readonly code?: string,
+  ) {
+    super(kind === 'script' ? 'captcha_script_failed' : kind === 'timeout' ? 'captcha_timeout' : 'captcha_failed');
+    this.name = 'CaptchaError';
+  }
+}
+
+/** Codes that retrying cannot fix: wrong/disabled sitekey, hostname not allowed, bad clock, ... */
+export function isConfigErrorCode(code: string | undefined): boolean {
+  return !!code && /^(110100|110110|110200|200100|400)/.test(code);
+}
+
 const SCRIPT_SRC = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
-const TIMEOUT_MS = 60_000;
+const TIMEOUT_MS = 120_000; // a visitor may need to read and tick the box
 const SCRIPT_TIMEOUT_MS = 20_000;
+const MAX_CHALLENGE_ERRORS = 3; // initial failure + 2 automatic retries
+const RETRY_DELAY_MS = 1_500;
 
 let scriptPromise: Promise<void> | null = null;
 
@@ -50,7 +78,7 @@ function loadScript(): Promise<void> {
     const stall = setTimeout(() => {
       scriptPromise = null; // allow a retry
       s.remove();
-      reject(new Error('captcha_script_failed'));
+      reject(new CaptchaError('script'));
     }, SCRIPT_TIMEOUT_MS);
     s.onload = () => {
       clearTimeout(stall);
@@ -59,7 +87,7 @@ function loadScript(): Promise<void> {
     s.onerror = () => {
       clearTimeout(stall);
       scriptPromise = null; // allow a retry
-      reject(new Error('captcha_script_failed'));
+      reject(new CaptchaError('script'));
     };
     document.head.appendChild(s);
   });
@@ -68,13 +96,13 @@ function loadScript(): Promise<void> {
 
 /**
  * Resolves with a one-time token to pass to `signInAnonymously({ options: { captchaToken } })`, or with
- * `undefined` when Turnstile is not configured for this build.
+ * `undefined` when Turnstile is not configured for this build. Rejects with a {@link CaptchaError}.
  */
 export async function getCaptchaToken(): Promise<string | undefined> {
   if (!captchaEnabled) return undefined;
   await loadScript();
   const api = window.turnstile;
-  if (!api) throw new Error('captcha_script_failed');
+  if (!api) throw new CaptchaError('script');
 
   return new Promise<string>((resolve, reject) => {
     const host = document.createElement('div');
@@ -84,6 +112,7 @@ export async function getCaptchaToken(): Promise<string | undefined> {
 
     let widgetId: string | undefined;
     let settled = false;
+    let errors = 0;
     const finish = (fn: () => void) => {
       if (settled) return;
       settled = true;
@@ -96,17 +125,45 @@ export async function getCaptchaToken(): Promise<string | undefined> {
       host.remove();
       fn();
     };
-    const timer = setTimeout(() => finish(() => reject(new Error('captcha_timeout'))), TIMEOUT_MS);
+    const timer = setTimeout(() => finish(() => reject(new CaptchaError('timeout'))), TIMEOUT_MS);
+
+    /** Handles error-callback and timeout-callback. Returns true when we deal with it ourselves. */
+    const onProblem = (code?: string): boolean => {
+      if (settled) return true;
+      if (isConfigErrorCode(code)) {
+        finish(() => reject(new CaptchaError('config', code)));
+        return true;
+      }
+      errors += 1;
+      if (errors >= MAX_CHALLENGE_ERRORS || !api.reset) {
+        finish(() => reject(new CaptchaError('challenge', code)));
+        return true;
+      }
+      // Transient "generic challenge failure": give the challenge another go, keeping the widget on screen.
+      setTimeout(() => {
+        if (settled || widgetId === undefined) return;
+        try {
+          api.reset?.(widgetId);
+        } catch {
+          finish(() => reject(new CaptchaError('challenge', code)));
+        }
+      }, RETRY_DELAY_MS);
+      return true;
+    };
 
     let early: string | undefined; // the callback can fire synchronously, before render() returns
     widgetId = api.render(host, {
       sitekey: SITE_KEY,
       appearance: 'interaction-only',
+      retry: 'never', // we drive retries ourselves so the error code is never lost
       callback: (token) => {
         if (widgetId === undefined) early = token;
         else finish(() => resolve(token));
       },
-      'error-callback': () => finish(() => reject(new Error('captcha_failed'))),
+      'error-callback': (code) => onProblem(code),
+      'timeout-callback': () => {
+        onProblem('timeout');
+      },
     });
     if (early !== undefined) finish(() => resolve(early as string));
   });

@@ -1,5 +1,6 @@
 import { getSupabase } from './supabase';
 import { DAILY_REWARD_CAP, MIN_TEST_SECONDS, RESERVATION_MINUTES } from './limits';
+import { CaptchaError } from './turnstile';
 import type {
   CampaignForTest,
   CancelResult,
@@ -57,7 +58,22 @@ const FRIENDLY: Record<string, string> = {
   captcha_timeout: 'The human check timed out. Please try again.',
 };
 
+function captchaMessage(e: CaptchaError): string {
+  const code = e.code ? ` (Cloudflare code ${e.code})` : '';
+  switch (e.kind) {
+    case 'config':
+      return `The human check is not set up correctly for this website${code}. This is a site configuration problem, not something you did — please tell the site owner.`;
+    case 'challenge':
+      return `The human check could not be completed${code}. Cloudflare did not accept this browser session. Try again, use a regular (non-private) window, turn off a VPN or privacy extensions for this site, or try another browser or network.`;
+    case 'timeout':
+      return 'The human check timed out. Please try again.';
+    default:
+      return FRIENDLY.captcha_script_failed;
+  }
+}
+
 export function friendlyError(e: unknown): string {
+  if (e instanceof CaptchaError) return captchaMessage(e);
   if (e instanceof ApiError && e.code === 'too_fast') {
     const left = Number(e.detail);
     const wait = Number.isFinite(left) && left > 0 ? ` About ${Math.ceil(left)} more second${Math.ceil(left) === 1 ? '' : 's'}.` : '';
