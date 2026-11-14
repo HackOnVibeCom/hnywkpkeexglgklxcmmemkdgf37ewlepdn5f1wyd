@@ -8,3 +8,5 @@ export const CAMPAIGN_EXPIRY_DAYS = 7;
 export const RESERVATION_MINUTES = 15;
 export const MIN_TEST_SECONDS = 60;
 export const DAILY_REWARD_CAP = 5;
+/** Rewarded referrals per referrer (migration 20261114000200). */
+export const REFERRAL_REWARD_CAP = 3;

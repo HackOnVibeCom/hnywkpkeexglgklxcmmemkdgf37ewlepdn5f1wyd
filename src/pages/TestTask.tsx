@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useParams } from 'react-router-dom';
 import { Field } from '../components/form';
+import { ShareCard } from '../components/Share';
 import { Alert, Button, ButtonLink, EmptyState, ExternalLink, Spinner } from '../components/ui';
 import { useAuth } from '../context/AuthContext';
 import { ApiError, fetchProfile, friendlyError, getCampaignForTest, startTest, submitTest } from '../lib/api';
@@ -57,7 +58,7 @@ const RESYNC_CODES = new Set(['reservation_expired', 'reservation_required', 'ca
 
 export function TestTask() {
   const { campaignId = '' } = useParams();
-  const { setBalance } = useAuth();
+  const { profile, setBalance } = useAuth();
   const { data: campaign, error: loadError, loading, reload } = useLoad(() => getCampaignForTest(campaignId), campaignId);
   const nowMs = useNow();
 
@@ -102,6 +103,7 @@ export function TestTask() {
             Test another product
           </ButtonLink>
         </div>
+        <ShareCard code={profile?.ref_code} variant="earned" />
       </div>
     );
   }

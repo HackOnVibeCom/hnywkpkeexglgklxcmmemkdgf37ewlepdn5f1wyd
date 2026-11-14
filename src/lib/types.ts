@@ -2,6 +2,18 @@ export interface Profile {
   id: string;
   credit_balance: number;
   created_at: string;
+  /** Public referral code of this identity (absent until migration 5 is applied). */
+  ref_code?: string;
+}
+
+export interface MyReferrals {
+  code: string;
+  cap: number;
+  invited: number;
+  /** Invitees who finished their first rewarded test. */
+  converted: number;
+  /** Rewards actually paid to me. */
+  rewarded: number;
 }
 
 /** One row of the Discover feed (list_open_campaigns). Never contains the website URL or owner. */
@@ -56,7 +68,7 @@ export interface CancelResult {
   balance: number;
 }
 
-export type LedgerReason = 'starter' | 'test_reward' | 'campaign_spend' | 'campaign_refund';
+export type LedgerReason = 'starter' | 'test_reward' | 'campaign_spend' | 'campaign_refund' | 'referral_reward';
 
 export interface LedgerEntry {
   id: number;
@@ -96,6 +108,8 @@ export interface MyCampaign {
 }
 
 export interface DashboardData {
+  /** Real referral counts; null when unavailable (e.g. migration 5 not applied yet). */
+  referrals?: MyReferrals | null;
   ledger: LedgerEntry[];
   testsCompleted: number;
   campaigns: MyCampaign[];

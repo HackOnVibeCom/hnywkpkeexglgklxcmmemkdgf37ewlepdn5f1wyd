@@ -72,7 +72,7 @@ ok((await as(B, () => q('select * from public.campaigns'))).length === 0, "B can
 ok((await as(B, () => q('select * from public.projects'))).length === 0, "B cannot read A's projects table");
 ok((await as(A, () => q('select * from public.projects'))).length === 1, 'A reads own project');
 ok((await as(B, () => q('select * from public.profiles'))).length === 1, 'B sees only own profile row');
-ok((await as(B, () => q('select * from public.credit_ledger'))).every((r) => r.user_id === B), 'B sees only own ledger rows');
+ok((await as(B, () => q('select id, user_id, delta, reason, campaign_id, created_at from public.credit_ledger'))).every((r) => r.user_id === B), 'B sees only own ledger rows');
 
 console.log('\n[discovery]');
 ok((await as(A, () => q('select * from public.list_open_campaigns()'))).length === 0, "owner does not see own campaign in feed");

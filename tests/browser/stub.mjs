@@ -68,6 +68,9 @@ export function createBackend(opts = {}) {
     dashReservations: opts.dashReservations ?? [],
     ledger: opts.ledger ?? [{ id: 1, delta: 1, reason: 'starter', campaign_id: null, created_at: iso(Date.now() - 72e5) }],
     submissions: opts.submissions ?? [],
+    refCode: opts.refCode ?? 'abcdef123456',
+    referrals: opts.referrals ?? { code: opts.refCode ?? 'abcdef123456', cap: 3, invited: 0, converted: 0, rewarded: 0 },
+    claimResult: opts.claimResult ?? { claimed: true },
   };
   const now = () => Date.now() + s.skewMs;
   const called = (name) => s.calls.filter((c) => c.p.endsWith('/rpc/' + name));
@@ -113,9 +116,13 @@ export function createBackend(opts = {}) {
           user: { id: 'u1', aud: 'authenticated', role: 'authenticated', is_anonymous: true, app_metadata: {}, user_metadata: {}, created_at: iso(Date.now()) },
         });
       }
-      if (rpcName === 'ensure_profile' || p === '/rest/v1/profiles') {
-        return send({ id: 'u1', credit_balance: s.balance, created_at: iso(Date.now()) });
+      if (rpcName === 'ensure_profile') {
+        return send({ id: 'u1', credit_balance: s.balance, created_at: iso(Date.now()), ref_code: s.refCode });
       }
+      if (p === '/rest/v1/profiles') return send({ id: 'u1', credit_balance: s.balance, created_at: iso(Date.now()) });
+      if (rpcName === 'claim_referral') return send(s.claimResult);
+      if (rpcName === 'get_my_referrals') return send(s.referrals);
+      if (rpcName === 'settle_referral_rewards') return send(0);
       if (rpcName === 'list_open_campaigns') return send(s.feed);
       if (rpcName === 'get_my_status') return send({ ...s.status, server_now: iso(now()) });
       if (rpcName === 'settle_expired_campaigns') {

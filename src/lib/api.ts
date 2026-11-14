@@ -7,6 +7,7 @@ import type {
   DashboardData,
   LedgerEntry,
   MyCampaign,
+  MyReferrals,
   MyStatus,
   OpenCampaign,
   Profile,
@@ -51,6 +52,9 @@ const FRIENDLY: Record<string, string> = {
   reservation_limit: 'You have already reserved this task three times. Please pick another task.',
   daily_limit: `You have reached today’s limit of ${DAILY_REWARD_CAP} rewarded tests (rolling 24 hours). You can start testing again when the oldest one is more than 24 hours old.`,
   refund_not_found: 'Could not refund this request. Nothing was changed — please contact support.',
+  captcha_script_failed: 'Could not load the human check (Cloudflare Turnstile). Disable content blockers for this site, check your connection, and try again.',
+  captcha_failed: 'The human check failed. Please try again.',
+  captcha_timeout: 'The human check timed out. Please try again.',
 };
 
 export function friendlyError(e: unknown): string {
@@ -61,6 +65,8 @@ export function friendlyError(e: unknown): string {
   }
   if (e instanceof ApiError && e.code && FRIENDLY[e.code]) return FRIENDLY[e.code];
   const msg = e instanceof Error ? e.message : String(e);
+  if (e instanceof Error && FRIENDLY[e.message]) return FRIENDLY[e.message];
+  if (/captcha/i.test(msg)) return 'The human check was not accepted. Please reload the page and try again.';
   if (/anonymous sign-ins are disabled/i.test(msg)) {
     return 'Anonymous sign-ins are disabled in the Supabase project. Enable them under Authentication → Sign In / Providers → Allow anonymous sign-ins.';
   }
@@ -97,6 +103,17 @@ export const startTest = (campaignId: string) => rpc<StartTestResult>('start_tes
 
 export const cancelCampaign = (campaignId: string) => rpc<CancelResult>('cancel_campaign', { p_campaign_id: campaignId });
 
+export const getMyReferrals = () => rpc<MyReferrals>('get_my_referrals');
+
+/** Pays referrers whose invitee finished a first test. Same contract as settleExpiredCampaigns: never throws. */
+export async function settleReferralRewards(): Promise<number> {
+  try {
+    return (await rpc<number>('settle_referral_rewards')) ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
 /**
  * Expires + refunds campaigns past their deadline that nobody is testing. Idempotent and bounded
  * server-side; any signed-in client may call it. Returns how many campaigns were settled.
@@ -132,6 +149,12 @@ export const submitTest = (i: SubmitTestInput) =>
     p_ux_rating: i.uxRating,
     p_share_consent: i.shareConsent,
   });
+
+/** Housekeeping on page load: expire+refund overdue campaigns and pay due referral rewards. Returns how many things changed. */
+export async function settleAll(): Promise<number> {
+  const [a, b] = await Promise.all([settleExpiredCampaigns(), settleReferralRewards()]);
+  return a + b;
+}
 
 export async function fetchDashboard(): Promise<DashboardData> {
   const sb = getSupabase();

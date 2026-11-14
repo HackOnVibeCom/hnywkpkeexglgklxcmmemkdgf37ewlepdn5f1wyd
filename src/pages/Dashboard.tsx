@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Alert, Button, ButtonLink, EmptyState, ExternalLink, PageHeader, Spinner } from '../components/ui';
+import { ProofCard, ReferralStats, ShareCard } from '../components/Share';
 import { useAuth } from '../context/AuthContext';
-import { cancelCampaign, fetchDashboard, fetchProfile, friendlyError, settleExpiredCampaigns } from '../lib/api';
+import { cancelCampaign, fetchDashboard, fetchProfile, friendlyError, getMyReferrals, settleAll } from '../lib/api';
 import { hostOf, plural, timeAgo, timeLeft } from '../lib/format';
 import { CAMPAIGN_EXPIRY_DAYS } from '../lib/limits';
 import type { LedgerReason, MyCampaign, Submission } from '../lib/types';
@@ -14,6 +15,7 @@ const REASON_LABEL: Record<LedgerReason, string> = {
   test_reward: 'Earned — completed a test',
   campaign_spend: 'Spent — requested a test',
   campaign_refund: 'Refunded — request cancelled or expired with no feedback',
+  referral_reward: 'Earned — a friend you invited finished their first test',
 };
 
 const AMBER = 'bg-amber-50 text-amber-800 border-amber-200';
@@ -175,8 +177,11 @@ export function Dashboard() {
   const nowMs = useNow(30_000);
   // Settle first so campaigns that expired while the founder was away are refunded before we render.
   const { data, error, loading, reload } = useLoad(async () => {
-    await settleExpiredCampaigns();
-    return fetchDashboard();
+    await settleAll();
+    const dash = await fetchDashboard();
+    // Referral counts are optional extras: never let them break the dashboard.
+    const referrals = await getMyReferrals().catch(() => null);
+    return { ...dash, referrals };
   });
 
   // Keep the header balance authoritative after any reload of this page.
@@ -208,6 +213,9 @@ export function Dashboard() {
           <Alert tone="success" title="Test requested">
             Your task is live in Discover. Feedback appears below once a real tester submits it.
           </Alert>
+          <div className="mt-4">
+            <ShareCard code={profile?.ref_code ?? data?.referrals?.code} variant="requested" />
+          </div>
         </div>
       )}
 
@@ -272,6 +280,15 @@ export function Dashboard() {
               once enough responses exist.
             </p>
           </section>
+
+          <ProofCard campaigns={data.campaigns} code={profile?.ref_code ?? data.referrals?.code} />
+
+          {!justCreated && (
+            <div className="mt-12">
+              <ShareCard code={profile?.ref_code ?? data.referrals?.code} variant="general" />
+              <ReferralStats data={data.referrals ?? null} />
+            </div>
+          )}
 
           <section className="mt-12" aria-labelledby="hist">
             <h2 id="hist" className="text-xl font-bold tracking-tight text-slate-900">

@@ -2,6 +2,8 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { config } from '../lib/config';
 import { getSupabase } from '../lib/supabase';
 import { friendlyError } from '../lib/api';
+import { claimStoredReferral } from '../lib/referral';
+import { getCaptchaToken } from '../lib/turnstile';
 import type { Profile } from '../lib/types';
 
 type Status = 'unconfigured' | 'loading' | 'ready' | 'error';
@@ -30,7 +32,9 @@ async function bootstrap(): Promise<Profile> {
   const sb = getSupabase();
 
   const signIn = async () => {
-    const { error } = await sb.auth.signInAnonymously();
+    // Cloudflare Turnstile (only when the build has a site key): one human check per NEW identity.
+    const captchaToken = await getCaptchaToken();
+    const { error } = await sb.auth.signInAnonymously(captchaToken ? { options: { captchaToken } } : undefined);
     if (error) throw error;
   };
 
@@ -52,6 +56,9 @@ async function bootstrap(): Promise<Profile> {
     res = await sb.rpc('ensure_profile');
   }
   if (res.error) throw new Error(res.error.message);
+  // Attribute this visit to the friend who invited us (no-op without a stored ?ref= code; never throws).
+  // Not awaited: a slow or locked claim must never keep the app on the loading screen.
+  void claimStoredReferral();
   return res.data as Profile;
 }
 

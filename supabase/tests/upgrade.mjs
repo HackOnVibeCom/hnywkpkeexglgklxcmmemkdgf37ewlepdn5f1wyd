@@ -76,4 +76,30 @@ await q(`update public.campaigns set created_at = now() - interval '9 days', exp
 ok((await as(uid(5), () => q('select public.settle_expired_campaigns() n')))[0].n === 0, 'settlement ignores it');
 ok(JSON.stringify(await snapshot()) !== undefined && (await snapshot()).subs_hash === before.subs_hash, 'its feedback is still byte-identical');
 
+console.log('\n[migration 5 (referrals) on the same populated database]');
+const M5 = '20261114000200_referrals.sql';
+const profilesBefore = (await q('select count(*)::int n from public.profiles'))[0].n;
+const ledgerBefore = await q('select id, user_id, delta, reason, campaign_id from public.credit_ledger order by id');
+let err5 = null;
+try { await db.exec(mig(M5)); } catch (e) { err5 = e.message; }
+ok(err5 === null, 'migration 5 applies cleanly on a populated database', err5 ?? '');
+const codes = await q('select ref_code from public.profiles');
+ok(codes.length === profilesBefore && codes.every((r) => /^[a-z0-9]{12}$/.test(r.ref_code)), 'every EXISTING identity got a valid ref_code');
+ok(new Set(codes.map((r) => r.ref_code)).size === codes.length, 'backfilled codes are unique (volatile default evaluated per row)');
+const ledgerAfter = await q('select id, user_id, delta, reason, campaign_id from public.credit_ledger order by id');
+ok(JSON.stringify(ledgerBefore) === JSON.stringify(ledgerAfter), 'existing ledger rows are unchanged');
+const flags5 = await q("select relname, relrowsecurity from pg_class where relnamespace = 'public'::regnamespace and relkind = 'r' and relname = 'referrals'");
+ok(flags5.length === 1 && flags5[0].relrowsecurity, 'referrals table exists with RLS enabled');
+const newcomer = uid(6);
+await db.query('insert into auth.users (id) values ($1)', [newcomer]);
+await as(newcomer, () => q('select * from public.ensure_profile()'));
+const referrerCode = (await as(uid(1), () => q('select ref_code from public.profiles')))[0].ref_code;
+ok((await as(newcomer, () => q('select public.claim_referral($1) r', [referrerCode])))[0].r.claimed === true, 'claim_referral works with NO default grants');
+ok((await as(newcomer, () => q('select public.get_my_referrals() r')))[0].r.cap === 3, 'get_my_referrals works');
+ok((await as(newcomer, () => q('select public.settle_referral_rewards() n')))[0].n === 0, 'settle_referral_rewards works (nothing due yet)');
+ok(await fails(() => as(newcomer, () => q('select * from public.referrals'))) !== null, 'referrals table is not readable by clients');
+ok(await fails(() => as(newcomer, () => q('select * from public.credit_ledger'))) !== null, 'select * on the ledger is now rejected (referee_id hidden)');
+ok(!(await fails(() => as(uid(1), () => q('select id, user_id, delta, reason, campaign_id, created_at from public.credit_ledger')))), 'the explicit column list the app uses still works');
+ok(await fails(() => as(null, () => q("select public.claim_referral('abcdefabcdef')"))) !== null, 'anon cannot call claim_referral');
+
 summary();

@@ -1,4 +1,4 @@
-import { fetchProfile, getMyStatus, listOpenCampaigns, settleExpiredCampaigns } from '../lib/api';
+import { fetchProfile, getMyStatus, listOpenCampaigns, settleAll } from '../lib/api';
 import { timeAgo, timeLeft } from '../lib/format';
 import { useLoad } from '../lib/useLoad';
 import { useNow } from '../lib/useNow';
@@ -19,7 +19,7 @@ export function Discover() {
   const { data, error, loading, reload } = useLoad<DiscoverData>(async () => {
     // Housekeeping first: expire + refund dead campaigns so they never clutter the list. If anything was
     // settled (possibly our own request), re-read the authoritative balance.
-    const settled = await settleExpiredCampaigns();
+    const settled = await settleAll();
     if (settled > 0) {
       fetchProfile()
         .then((p) => setBalance(p.credit_balance))

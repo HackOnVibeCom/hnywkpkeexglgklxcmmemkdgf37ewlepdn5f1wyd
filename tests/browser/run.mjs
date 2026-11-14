@@ -59,24 +59,32 @@ function serve(dir) {
 }
 
 console.log('Building app (no env)…');
-const dirNo = await buildApp('noenv', { VITE_SUPABASE_URL: '', VITE_SUPABASE_ANON_KEY: '' });
+const dirNo = await buildApp('noenv', { VITE_SUPABASE_URL: '', VITE_SUPABASE_ANON_KEY: '', VITE_TURNSTILE_SITE_KEY: '' });
 console.log('Building app (stub env)…');
 const dirEnv = await buildApp('env', {
   VITE_SUPABASE_URL: 'https://testproj.supabase.co',
   VITE_SUPABASE_ANON_KEY: 'sb_publishable_stubbed_browser_tests_key',
+  VITE_TURNSTILE_SITE_KEY: '', // Turnstile OFF: sign-in must work exactly as before
+});
+console.log('Building app (stub env + Turnstile site key)…');
+const dirCap = await buildApp('captcha', {
+  VITE_SUPABASE_URL: 'https://testproj.supabase.co',
+  VITE_SUPABASE_ANON_KEY: 'sb_publishable_stubbed_browser_tests_key',
+  VITE_TURNSTILE_SITE_KEY: '1x00000000000000000000AA', // Cloudflare's public always-pass TEST key
 });
 const a = await serve(dirNo);
 const b = await serve(dirEnv);
+const c = await serve(dirCap);
 
 let failed = false;
 try {
-  for (const suite of ['core-ui.mjs', 'lifecycle-ui.mjs']) {
+  for (const suite of ['core-ui.mjs', 'lifecycle-ui.mjs', 'phase2-ui.mjs']) {
     console.log(`\n══════ ${suite} ══════`);
     // Async spawn: the static servers live in THIS process, so the event loop must stay free.
     const code = await new Promise((res) => {
       const child = spawn(process.execPath, [join(here, suite)], {
         stdio: 'inherit',
-        env: { ...process.env, BASE_NOENV: a.url, BASE_ENV: b.url },
+        env: { ...process.env, BASE_NOENV: a.url, BASE_ENV: b.url, BASE_CAPTCHA: c.url },
       });
       child.on('exit', (c) => res(c));
     });
@@ -85,6 +93,7 @@ try {
 } finally {
   a.server.close();
   b.server.close();
+  c.server.close();
   rmSync(tmp, { recursive: true, force: true });
 }
 console.log(failed ? '\nBROWSER TESTS FAILED' : '\nBROWSER TESTS PASSED');

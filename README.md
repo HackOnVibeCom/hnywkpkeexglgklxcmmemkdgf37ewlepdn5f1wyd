@@ -29,6 +29,7 @@ No SSR, Node server, WebRTC or PeerJS.
 |---|---|
 | Database schema, RLS, atomic RPCs (migrations 1–3) | Implemented, **applied to the project and verified end-to-end** (API script + real browser, incl. true parallel races). |
 | **Phase 1: campaign lifecycle + anti-abuse (migration 4)** | Implemented and tested locally. **NOT yet applied to the live project** — it needs your approval (see [Applying migration 4](#applying-migration-4-phase-1)). 7-day expiry, 15-min reservations, 60 s minimum testing time, 5 rewarded tests / rolling 24 h, cancel + refund (exactly once), expired/reserved campaigns never block Discover. |
+| **Phase 2: referrals, sharing, Turnstile** | Implemented and tested **locally only**. Migration 5 (`20261114000200_referrals.sql`) is **not applied** and Supabase CAPTCHA is **off** — both need your approval; see [Growth](#growth-referral-links-and-sharing) and [Turnstile](#cloudflare-turnstile-human-check-on-first-sign-in). |
 | Automated tests | `npm run test:db` (PGlite: 119 core + 118 lifecycle + 19 upgrade-rehearsal assertions), `npm run test:browser` (real Chrome, stubbed API: 58 + 77 checks). Real-project test: `tests/live/live-e2e.mjs` (needs migration 4 applied). |
 | 5 screens (landing, discover, create, test, dashboard) | Implemented, typechecked, builds on Node 20. Layout checked in Chrome at 1280px and 360px. |
 | Deployed site | Shows an explicit "Backend not configured" notice until a `.env.production` with the public Supabase values is committed (nothing is mocked). |
@@ -46,6 +47,7 @@ No SSR, Node server, WebRTC or PeerJS.
    - `supabase/migrations/20261113000200_rls.sql`
    - `supabase/migrations/20261113000300_rpc.sql`
    - `supabase/migrations/20261114000100_lifecycle_antiabuse.sql` *(Phase 1 — see below before applying)*
+   - `supabase/migrations/20261114000200_referrals.sql` *(Phase 2 — referral links; apply only after a reviewed dry-run)*
 4. Copy from *Project Settings → API*: the **Project URL** and the **anon / publishable key**.
    Use **only** the public anon/publishable key. The app refuses to start if it detects a `service_role`/secret key.
 5. *(Strongly recommended)* *Authentication → Attack Protection → CAPTCHA* (e.g. Cloudflare Turnstile) to make mass-creating anonymous identities harder. This needs a small client change (pass the captcha token to `signInAnonymously`) that is **not** implemented yet.
@@ -99,6 +101,32 @@ Prerequisite: migrations 1–3 are already applied. Migration 4 **replaces `subm
 `update public.campaigns set created_at = now() - interval '8 days', expires_at = now() - interval '1 day' where id = '<campaign id>';`
 and reload the Dashboard of that founder: the campaign must show *Expired — credit refunded* and the balance must be +1 exactly once.
 
+## Growth: referral links and sharing
+
+Every identity has a public **invite link** `https://<site>/?ref=<code>` (12-char random code). It is shown right after a founder requests a test and right after they earn a credit, and on the Dashboard.
+
+| Rule | Detail |
+|---|---|
+| The reason to invite | When a friend joins through your link and **finishes their first real test**, you earn **+1 Test Credit** (= one free test of your own product). The friend still gets the normal starter credit. The card says this in plain words — it is never a hidden incentive. |
+| Cap | 3 rewarded referrals per referrer. |
+| Idempotent | One referral per invitee, one reward per invitee (primary key + unique ledger index); payment is a separate idempotent settlement run on page loads (like expiry refunds), not inside `submit_test`. |
+| Which test counts | The invitee's test must be on **someone else's** campaign, never the referrer's own (otherwise the referrer could time the invitee's test against the feedback they receive and unmask the tester, and an alt identity could "complete" its owner's campaign to harvest credits). |
+| Who can be referred | Only brand-new participants: refused after the first earned reward, self-referral and mutual referral refused; the first link a visitor opens wins. |
+| Privacy | The referrer sees only counts (invited / finished a first test / rewarded). Invitee identities are never exposed (the ledger's `referee_id` column is not granted to clients). |
+| Results card | "Share your results" on the Dashboard is built **in the browser** from the founder's own results: number of tests, how many completed the task, average rating. A quote appears only if that tester ticked *allow public quoting*; private feedback and tester identities are never included; nothing is published until the founder posts it. No public endpoint exists. |
+
+**Honest limits:** anonymous identities can't prove they are different people. A determined person can create friends-of-themselves, but each fake invitee must pass the human check (when Turnstile is on), reserve a task, wait 60 s and complete a *real* test of another founder's product (which is real value to that founder), and each referrer is capped at 3 rewards. This raises the cost; it does not make farming impossible. The cap of 3 shapes the referral tree, it is **not** an anti-abuse control: every extra identity mints a starter credit and (as an invitee) one referral credit for its parent, so a person with many identities earns roughly twice per identity. The brakes are Turnstile + Supabase's per-IP sign-in limits, the 60 s minimum and the one-live-reservation rule. Other people's codes cannot be probed: `claim_referral` answers caller-state questions first and gives an unknown-code answer for mutual links, so a code is only ever confirmed by a successful claim (which uses up that identity's single claim).
+
+## Cloudflare Turnstile (human check on first sign-in)
+
+Anonymous sign-in is the only place identities are created, so it is the place for the check. New visitors pass an (invisible unless needed) Cloudflare Turnstile challenge before their anonymous account is created; returning browsers already have a session and are never challenged.
+
+1. Cloudflare dashboard → Turnstile → add a widget for your deployed hostname (plus `localhost` for development). You get a **site key** (public) and a **secret**.
+2. Put the **site key** in `VITE_TURNSTILE_SITE_KEY` (`.env.local` for dev, the committed `.env.production` for the deploy). It is public by design. For local development Cloudflare publishes an always-pass test key: `1x00000000000000000000AA`.
+3. Deploy the frontend, **then** enable it server-side: Supabase dashboard → Authentication → Attack Protection → *Enable CAPTCHA protection* → Turnstile → paste the **secret** there. The secret never goes into this repo or the browser bundle.
+
+**Order matters:** if Supabase CAPTCHA is switched on before the compatible frontend is live, every new visitor's anonymous sign-in fails. With no site key set the app behaves exactly as before.
+
 ## Tests
 
 | Command | What it proves |
@@ -106,6 +134,8 @@ and reload the Dashboard of that founder: the campaign must show *Expired — cr
 | `npm run test:db` | Real Postgres (PGlite) with the **real migration files**: security/atomicity of the MVP core (`run.mjs`), Phase 1 lifecycle with simulated time (`lifecycle.mjs`), and a rehearsal of the production upgrade on a populated database with *exposure disabled + auto-RLS* (`upgrade.mjs`). Mutation-tested: 25 of 26 deliberately broken migrations are caught (the 26th, a lock-skip that prevents a deadlock, is only observable under real concurrency). |
 | `npm run test:browser` | Builds the app and drives **real Chrome** against a *stubbed* Supabase API (fresh incognito-like contexts): UI wiring, request payloads, timers, error states, mobile layout. Does **not** test the database. |
 | `tests/live/live-e2e.mjs` | The real project: real anonymous auth, PostgREST, RLS, and genuinely parallel requests. Guarded by `PEERPROBE_LIVE_TESTS=1`. |
+| `tests/live/referral-e2e.mjs` | Same for referrals (needs migration 5): parallel claims, six concurrent settlers racing for one referrer's cap of 3, anonymity, invariants. |
+| `supabase/tests/referrals.mjs` | Referral rules in real Postgres: claim rules, first-test-only, idempotent + capped rewards, privileges, invariants; mutation-tested (17/17 broken migrations caught). |
 
 ## Deployment
 

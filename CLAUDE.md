@@ -5,6 +5,7 @@ Peer-to-peer human usability-testing credit exchange (HackOnVibe MVP). Read `.cl
 ## Commands
 - `npm run dev` / `npm run typecheck` / `npm run build` (CI runs the build on **Node 20**)
 - `npm run test:db` — real-Postgres (PGlite) tests of the Supabase migrations (core + lifecycle + upgrade rehearsal)
+- Phase 2 (referrals + Turnstile) code lives in `src/lib/{referral,turnstile}.ts`, `src/components/Share.tsx`; migration `20261114000200_referrals.sql` is NOT applied until the user approves a reviewed dry-run; **never enable Supabase CAPTCHA before the Turnstile-aware frontend is deployed**.
 - `npm run test:browser` — real Chrome vs a **stubbed** API (builds the app twice into a temp dir)
 - `PEERPROBE_LIVE_TESTS=1 node tests/live/live-e2e.mjs` — writes to the REAL Supabase project in `.env.local`; only after migration 4 is applied and with the user's OK
 

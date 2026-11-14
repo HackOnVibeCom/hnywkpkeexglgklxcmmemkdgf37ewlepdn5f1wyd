@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import { ButtonLink } from '../components/ui';
+import { hasPendingReferral } from '../lib/referral';
 
 const STEPS = [
   {
@@ -26,6 +28,7 @@ const FEEDBACK_FIELDS = [
 ];
 
 export function Landing() {
+  const [invited] = useState(() => hasPendingReferral());
   return (
     <div className="space-y-20">
       <section className="max-w-4xl">
@@ -50,6 +53,12 @@ export function Landing() {
           </ButtonLink>
         </div>
         <p className="mt-4 text-sm text-slate-500">No signup, email or password. You start with 1 free credit.</p>
+        {invited && (
+          <p className="mt-3 max-w-xl rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-900" data-testid="invited-note">
+            A founder invited you. After you finish your first test they earn a free test credit too — that is the only thing
+            the invitation does.
+          </p>
+        )}
       </section>
 
       <section aria-labelledby="how">
