@@ -33,7 +33,7 @@ export function Landing() {
     <div className="space-y-20">
       <section className="max-w-4xl">
         <p className="mb-4 inline-block rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-indigo-700">
-          Peer-to-peer usability testing
+          Give feedback. Get feedback.
         </p>
         <h1 className="text-4xl font-bold tracking-tight text-slate-900 sm:text-5xl">
           Get real people to use your product.
@@ -41,8 +41,9 @@ export function Landing() {
           <span className="text-indigo-600">Earn it by testing theirs.</span>
         </h1>
         <p className="mt-5 max-w-2xl text-lg leading-relaxed text-slate-600">
-          PeerProbe is a credit exchange between founders. Spend three minutes testing someone else’s website, earn a
-          Test Credit, and redeem it for a human test of your own product — with structured, honest feedback.
+          UXBarter is a credit-based, peer-to-peer usability-testing exchange for founders and developers. Spend three
+          minutes testing someone else’s website, earn a Test Credit, and redeem it for a human test of your own product
+          — with structured, honest feedback.
         </p>
         <div className="mt-8 flex flex-wrap gap-3">
           <ButtonLink to="/create" size="lg">

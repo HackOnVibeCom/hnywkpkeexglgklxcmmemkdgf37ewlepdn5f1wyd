@@ -1,4 +1,4 @@
-﻿# PeerProbe — project state
+﻿# UXBarter (formerly PeerProbe) — project state
 
 _Last updated: 2026-11-14 (branch `feat/peerprobe-mvp`; migrations 1-5 applied; Vercel Production live behind Vercel Authentication; Supabase CAPTCHA enforced). See the dated sections below; older sections are history._
 
@@ -52,6 +52,7 @@ Team `peer-probe` (PeerProbe, Pro), project `peerprobe`, deployed with the Verce
 - Auth providers: only anonymous is enabled (/auth/v1/settings: external.email=false, phone=false; config: auth.email.enable_signup=false). Site URL = https://peerprobe.vercel.app (was http://localhost:3000). CAPTCHA enabled, provider turnstile. Anonymous sign-ins on.
 
 ## Release prep (2026-11-14)
-- Prepared in the working tree: CSP Report-Only header (vercel.json), tests/browser/csp-check.mjs, README/CLAUDE.md/memory refresh (live URL, Vercel hosting, current test counts). Prepared but deliberately NOT committed until the final product name is confirmed: Open Graph/Twitter tags + canonical (index.html), public/og-image.png, scripts/make-og-image.mjs (NAME constant). Absolute URLs there use https://peerprobe.vercel.app.
+- Release prep done (committed): CSP Report-Only header (vercel.json), tests/browser/csp-check.mjs, README/CLAUDE.md/memory refresh.
+- REBRAND to UXBarter (2026-11-14, one commit "brand: rebrand PeerProbe to UXBarter", NOT pushed/deployed until approved): UI text, share prompts, results card, logo mark + favicon (exchange arrows), index.html title/description/Open Graph/Twitter/canonical, public/og-image.png (regenerate with scripts/make-og-image.mjs), README/CLAUDE.md/memory. Infrastructure keeps the old name on purpose (README -> Naming): Vercel project + URL peerprobe.vercel.app (Turnstile hostname), branch feat/peerprobe-mvp, Supabase objects/migrations, PEERPROBE_* env vars, package names, pp:* storage keys. og:url/canonical/image URLs deliberately stay on peerprobe.vercel.app.
 - Merge plan: push local docs commit; switch Vercel protection to Standard and verify; PR feat/peerprobe-mvp -> main (fast-forwardable, 0 behind, clean merge-tree); merge with a MERGE COMMIT (not squash/rebase) to preserve all commits and SHAs; after merge check that the HackOnVibe workflow run is green-but-skipped and that main has no .env files; rollback = revert the merge commit (git revert -m 1), never force-push.
 - Vercel Pro trial ends 2026-11-28 18:39 UTC.

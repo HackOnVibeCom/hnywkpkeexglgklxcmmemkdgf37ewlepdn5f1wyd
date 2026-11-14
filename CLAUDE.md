@@ -1,6 +1,8 @@
-# PeerProbe — project instructions
+# UXBarter (formerly PeerProbe) — project instructions
 
 Peer-to-peer human usability-testing credit exchange (HackOnVibe MVP). Read `.claude-memory/` first; it holds decisions and current state. `README.md` has setup.
+
+**Naming:** the product is **UXBarter** (tagline "Give feedback. Get feedback."); always write it with that capitalization in anything user-facing. Infrastructure keeps the old name on purpose and must NOT be renamed: Vercel project/URL `peerprobe` / https://peerprobe.vercel.app (also the Turnstile hostname), branch `feat/peerprobe-mvp`, Supabase project/objects/migrations, `PEERPROBE_*` test env vars, package names, `pp:*` storage keys. See README → Naming.
 
 ## Commands
 - `npm run dev` / `npm run typecheck` / `npm run build` (the HackOnVibe workflow would build on **Node 20**; Vercel project uses Node 24.x; both must stay clean)

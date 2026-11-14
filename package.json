@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "PeerProbe — a peer-to-peer human usability testing exchange. Test someone else's product, earn a credit, spend it to get yours tested.",
+  "description": "UXBarter — a credit-based, peer-to-peer usability testing exchange for founders and developers. Give feedback, earn a credit, spend it to get feedback on your own product.",
   "engines": {
     "node": ">=20"
   },

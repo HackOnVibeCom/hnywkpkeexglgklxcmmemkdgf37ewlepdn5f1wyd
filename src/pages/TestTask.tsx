@@ -238,7 +238,7 @@ export function TestTask() {
             </p>
             <p className="mt-3 text-xs text-slate-500">
               It opens in a new tab. Try the task, then come back here for step 2. This site belongs to another user and is
-              not vetted by PeerProbe — don’t enter real passwords or payment details.
+              not vetted by UXBarter — don’t enter real passwords or payment details.
             </p>
           </div>
         ) : (

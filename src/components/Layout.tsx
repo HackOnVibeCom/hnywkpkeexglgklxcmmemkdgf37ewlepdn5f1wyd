@@ -9,14 +9,16 @@ const NAV = [
 
 function Logo() {
   return (
-    <Link to="/" className="flex items-center gap-2 font-bold text-slate-900" aria-label="PeerProbe home">
+    <Link to="/" className="flex items-center gap-2 font-bold text-slate-900" aria-label="UXBarter home">
       <span aria-hidden className="grid h-8 w-8 place-items-center rounded-lg bg-indigo-600 text-white">
         <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
-          <circle cx="10.5" cy="10.5" r="5.5" />
-          <path d="m15 15 5 5" />
+          <path d="m8 4-4 4 4 4" />
+          <path d="M4 8h16" />
+          <path d="m16 20 4-4-4-4" />
+          <path d="M20 16H4" />
         </svg>
       </span>
-      <span className="text-lg tracking-tight">PeerProbe</span>
+      <span className="text-lg tracking-tight">UXBarter</span>
     </Link>
   );
 }
@@ -69,8 +71,9 @@ export function Layout() {
 
       <footer className="border-t border-slate-200 bg-white">
         <div className="mx-auto max-w-5xl px-4 py-6 text-xs leading-relaxed text-slate-500 sm:px-6">
+          <p className="mb-2 text-sm font-semibold text-slate-700">UXBarter — Give feedback. Get feedback.</p>
           <p>
-            PeerProbe has no accounts. Your anonymous identity — and your credits — are tied to this browser; clearing
+            UXBarter has no accounts. Your anonymous identity — and your credits — are tied to this browser; clearing
             site data creates a new identity. Anonymous identity does not fully prevent one person from creating
             several identities. Feedback is private to the requesting founder unless the tester opts in to sharing.
           </p>

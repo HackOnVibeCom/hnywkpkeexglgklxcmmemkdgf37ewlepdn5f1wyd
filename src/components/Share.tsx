@@ -82,11 +82,11 @@ function ShareButtons({ text, link, copyLabel, copyWhat }: { text: string; link:
 
 const SHARE_TEXT = {
   requested:
-    'I just asked real founders to test my product on PeerProbe — a free swap of 3-minute usability tests, no signup. Heads-up: if you join with my link and finish a test, I earn a free test credit.',
+    'I just asked real founders to test my product on UXBarter — a free swap of 3-minute usability tests, no signup. Heads-up: if you join with my link and finish a test, I earn a free test credit.',
   earned:
-    'I just earned a free usability-test credit by testing another founder’s product on PeerProbe. Swap tests with other founders — no signup:',
+    'I just earned a free usability-test credit by testing another founder’s product on UXBarter. Swap tests with other founders — no signup:',
   general:
-    'I’m swapping usability tests with other founders on PeerProbe: test someone’s product, get yours tested by real people. No signup:',
+    'I’m swapping usability tests with other founders on UXBarter: give feedback on someone’s product, get feedback on yours. No signup:',
 } as const;
 
 /** "Invite a founder" prompt. States the incentive plainly (what the sharer gets) so it is never a hidden bribe. */
@@ -148,12 +148,12 @@ export function proofStats(campaigns: MyCampaign[]): ProofStats | null {
 
 export function proofText(s: ProofStats, includeQuote: boolean): string {
   const n = s.tests === 1 ? '1 tester' : `${s.tests} testers`;
-  const base = `${n} just tested my product on PeerProbe: ${s.completed}/${s.tests} completed the task, average UX rating ${s.avgRating}/5.`;
+  const base = `${n} just tested my product on UXBarter: ${s.completed}/${s.tests} completed the task, average UX rating ${s.avgRating}/5.`;
   const q = includeQuote && s.quote ? ` One tester said: “${s.quote}”` : '';
   return `${base}${q} Swap usability tests with other founders, no signup:`;
 }
 
-/** "Share my results": real numbers only, computed locally; nothing is published to PeerProbe or anyone else. */
+/** "Share my results": real numbers only, computed locally; nothing is published to UXBarter or anyone else. */
 export function ProofCard({ campaigns, code }: { campaigns: MyCampaign[]; code: string | undefined }) {
   const stats = proofStats(campaigns);
   const [withQuote, setWithQuote] = useState(true);
@@ -166,7 +166,7 @@ export function ProofCard({ campaigns, code }: { campaigns: MyCampaign[]; code: 
         Share your results
       </h2>
       <div className="mt-4 rounded-xl bg-slate-900 p-6 text-white" data-testid="proof-card">
-        <p className="text-xs font-semibold uppercase tracking-wide text-indigo-300">Tested by other founders on PeerProbe</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-indigo-300">Tested by other founders on UXBarter</p>
         <p className="mt-2 text-3xl font-bold">
           {stats.tests} {stats.tests === 1 ? 'real test' : 'real tests'}
         </p>

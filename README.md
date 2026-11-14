@@ -1,6 +1,8 @@
-# PeerProbe
+# UXBarter
 
-**Peer-to-peer human usability testing exchange.** Founders swap 2–3 minute tests of each other's products:
+**UXBarter — Give feedback. Get feedback.** A credit-based, peer-to-peer usability-testing exchange where founders and developers earn credits by testing each other's products, and spend them to get their own product tested. *(Formerly PeerProbe: the Vercel project and URL, the Supabase project and several internal identifiers keep the old name — see [Naming](#naming-uxbarter-vs-peerprobe).)*
+
+How it works — founders swap 2–3 minute tests of each other's products:
 
 1. A founder submits a public website URL and one specific task (costs **1 Test Credit**).
 2. Another founder opens the site, does the task, and submits structured feedback (task completed? friction, suggested improvement, 1–5 UX rating).
@@ -122,6 +124,8 @@ The site is a static Vite build, so Vercel needs no server code. `vercel.json` s
 
 ## Growth: referral links and sharing
 
+**Growth model (zero paid acquisition).** UXBarter has no ad spend and no paid channel. The product is built so that using it brings in more users: every test needs a second founder, a founder who has requested a test has a concrete reason to ask others to join, and the app provides the tools — an invite link with a capped, plainly disclosed reward, share prompts at the moments of value (after requesting a test, after earning a credit), and a results card the founder can post. These are mechanisms, not results: this repository and the site contain **no traction, revenue, conversion or testimonial claims**, and none should be added until they are real and measured.
+
 Every identity has a public **invite link** `https://<site>/?ref=<code>` (12-char random code). It is shown right after a founder requests a test and right after they earn a credit, and on the Dashboard.
 
 | Rule | Detail |
@@ -162,6 +166,7 @@ Anonymous sign-in is the only place identities are created, so it is the place f
 | `tests/live/referral-e2e.mjs` | Same for referrals (needs migration 5): parallel claims, six concurrent settlers racing for one referrer's cap of 3, anonymity, invariants. |
 | `supabase/tests/referrals.mjs` | Referral rules in real Postgres: claim rules, own-campaign tests never qualify, idempotent + capped rewards (cap survives deleting invitees), no starvation by unpayable rows, privileges, invariants; mutation-tested (26/26 broken migrations caught). |
 | `node tests/browser/csp-check.mjs` | Builds the app, serves it with the Content-Security-Policy taken from `vercel.json` **enforced**, and drives sign-in, Dashboard (results card), Create and Test pages in real Chrome: fails on any violation raised by our own page. Run it before tightening the policy. |
+| `node tests/browser/brand-check.mjs` | Brand consistency in real Chrome (desktop + 360 px): the old name appears nowhere in visible text, accessible labels, title, share links or the copied results message; Open Graph/Twitter tags, the 1200×630 image and the favicon are consistent. |
 
 ## Deployment
 
@@ -197,6 +202,21 @@ Anonymous sign-in is the only place identities are created, so it is the place f
 - Feedback quality is only length-validated (≥10 characters per text answer).
 - The React UI tests (`npm run test:browser`) run against a stubbed API, so they verify the client, not the database; the database is verified by `npm run test:db` and `tests/live/live-e2e.mjs`.
 
+## Naming: UXBarter vs PeerProbe
+
+The product was renamed from PeerProbe to **UXBarter** just before the HackOnVibe submission. Only user-facing text, metadata, the favicon/logo mark and documentation changed. These identifiers deliberately keep the old name because renaming them would break infrastructure, history or stored data:
+
+| Kept as `peerprobe` | Why |
+|---|---|
+| Vercel project `peerprobe` and the URL `https://peerprobe.vercel.app` | It is the existing production deployment and the only hostname the Cloudflare Turnstile widget allows; `og:url`, `canonical` and the image URLs in `index.html` use it |
+| GitHub branch `feat/peerprobe-mvp` and the Vercel team slug | Existing remote history and settings |
+| Supabase project, tables, RPC names, migration files (including their first-line comments) | Migrations 1–5 are applied to production and must not be edited |
+| `PEERPROBE_LIVE_TESTS`, `PEERPROBE_URL`, `PEERPROBE_KEY` environment variables | Internal test switches |
+| npm package names (`peerprobe`, `peerprobe-*-tests`), temp-directory prefixes, the `peerprobe-forbid-secret-keys` Vite plugin | Internal ids |
+| Browser storage keys `pp:ref`, `pp:draft:*` | Renaming would silently drop visitors' stored invitations and unsent drafts |
+
+Old commits, the project memory history and the deployment notes also keep the old name.
+
 ## Repository layout
 
 ```
@@ -208,6 +228,7 @@ tests/live/             Real-project end-to-end scripts (guarded by PEERPROBE_LI
 public/_headers         Cloudflare-style headers (inert on Vercel; kept for the HackOnVibe path)
 vercel.json             Vercel build, SPA rewrite, security headers, CSP (Report-Only)
 .vercelignore           Files the Vercel CLI never uploads
+scripts/                make-og-image.mjs regenerates public/og-image.png (the social-share card)
 .env.example            Public Supabase settings template
 .github/workflows/      Managed centrally by HackOnVibe — do not edit
 ```
