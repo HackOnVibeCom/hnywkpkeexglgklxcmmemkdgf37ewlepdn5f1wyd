@@ -1,65 +1,16 @@
 // Executes the real migration files in real Postgres (PGlite) and asserts the
-// security/atomicity guarantees. The Supabase-specific pieces are stubbed:
-//   roles anon / authenticated / service_role, schema auth, auth.users, auth.uid().
-// auth.uid() reads request.jwt.claim.sub — the same GUC PostgREST sets per request.
-//
-// Limits: PGlite is single-connection, so true parallel races cannot be
-// exercised here. Exactly-once behaviour under concurrency is enforced by row
-// locks + unique indexes; the tests check those constraints directly.
+// security/atomicity guarantees of the MVP core (starter credit, spend, reward, RLS, privileges).
+// The lifecycle / anti-abuse guarantees (expiry, reservations, refunds, caps) are in lifecycle.mjs.
+// Shared setup + limits: see harness.mjs.
 
-import { PGlite } from '@electric-sql/pglite';
-import { readFileSync, readdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { createHarness } from './harness.mjs';
 
-const here = dirname(fileURLToPath(import.meta.url));
-const migDir = join(here, '..', 'migrations');
-
-const db = new PGlite();
-
-await db.exec(`
-  create role anon nologin;
-  create role authenticated nologin;
-  create role service_role nologin bypassrls;
-  create schema auth;
-  create table auth.users (id uuid primary key);
-  create function auth.uid() returns uuid language sql stable
-    as $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
-  grant usage on schema auth to anon, authenticated;
-  grant execute on function auth.uid() to anon, authenticated;
-  grant usage on schema public to anon, authenticated;
-  -- Mimic Supabase default privileges (broad grants that our migrations must revoke).
-  alter default privileges in schema public grant all on tables to anon, authenticated;
-  alter default privileges in schema public grant all on functions to anon, authenticated;
-`);
-
-for (const f of readdirSync(migDir).filter((n) => n.endsWith('.sql')).sort()) {
-  await db.exec(readFileSync(join(migDir, f), 'utf8'));
-  console.log(`applied ${f}`);
-}
+const { db, as, q, ok, fails, failsWith, summary } = await createHarness();
 
 const A = '00000000-0000-0000-0000-00000000000a';
 const B = '00000000-0000-0000-0000-00000000000b';
 const C = '00000000-0000-0000-0000-00000000000c';
 for (const u of [A, B, C]) await db.query('insert into auth.users (id) values ($1)', [u]);
-
-let passed = 0;
-let failed = 0;
-const ok = (cond, name, extra = '') => {
-  if (cond) { passed++; console.log(`  PASS  ${name}`); }
-  else { failed++; console.log(`  FAIL  ${name} ${extra}`); }
-};
-
-/** Run SQL as a given identity (role + jwt sub). uid=null → role anon. */
-async function as(uid, fn) {
-  await db.exec(`set role ${uid ? 'authenticated' : 'anon'}`);
-  await db.query(`select set_config('request.jwt.claim.sub', $1, false)`, [uid ?? '']);
-  try { return await fn(); }
-  finally { await db.exec('reset role'); }
-}
-const q = (sql, params) => db.query(sql, params).then((r) => r.rows);
-const fails = async (fn) => { try { await fn(); return null; } catch (e) { return String(e.message); } };
-const failsWith = async (fn, code) => (await fails(fn))?.includes(code) ?? false;
 
 const GOOD_URL = 'https://example.com/app';
 const TASK = 'Find the pricing page and tell me which plan you would pick.';
@@ -128,13 +79,33 @@ ok((await as(A, () => q('select * from public.list_open_campaigns()'))).length =
 const feed = await as(B, () => q('select * from public.list_open_campaigns()'));
 ok(feed.length === 1 && feed[0].campaign_id === camp, 'other user sees the open campaign');
 ok(!('project_url' in feed[0]) && !('owner_id' in feed[0]), 'feed leaks neither url nor owner id');
-ok((await as(B, () => q('select * from public.get_campaign_for_test($1)', [camp])))[0].project_url === GOOD_URL, 'test page RPC returns url to eligible tester');
+ok((await as(B, () => q('select * from public.get_campaign_for_test($1)', [camp])))[0].project_url === null, 'test page RPC hides the url until the tester reserves the task');
+await as(B, () => q('select public.start_test($1)', [camp]));
+ok((await as(B, () => q('select * from public.get_campaign_for_test($1)', [camp])))[0].project_url === GOOD_URL, 'test page RPC returns url to the tester holding a reservation');
 ok((await as(A, () => q('select * from public.get_campaign_for_test($1)', [camp]))).length === 0, 'owner cannot fetch own campaign for testing');
 
 console.log('\n[submit_test]');
-const submit = (uid, o = {}) => as(uid, () => q(
-  'select public.submit_test($1,$2,$3,$4,$5,$6) as r',
-  [o.id ?? camp, o.done ?? true, o.friction ?? FEEDBACK.friction, o.suggestion ?? FEEDBACK.suggestion, o.rating ?? 4, o.consent ?? false]));
+// Since migration 4, submit_test needs a live reservation and >= 60 s of testing time. This helper
+// satisfies that gate (reserve, then age the reservation 61 s) so the original MVP-core assertions
+// below still exercise submit_test's own rules. start_test errors are swallowed on purpose: when the
+// campaign is own/closed/unknown, submit_test must produce the error under test. Any unconsumed
+// reservation is dropped afterwards so one test cannot leak a live reservation into the next.
+// (The gate itself is tested in lifecycle.mjs.)
+const submit = async (uid, o = {}) => {
+  const id = o.id ?? camp;
+  await as(uid, () => q('select public.start_test($1)', [id])).catch(() => null);
+  await q(`update public.test_reservations
+              set first_started_at = first_started_at - interval '61 seconds',
+                  started_at = started_at - interval '61 seconds'
+            where tester_id = $1 and campaign_id = $2 and consumed_at is null`, [uid, id]);
+  try {
+    return await as(uid, () => q(
+      'select public.submit_test($1,$2,$3,$4,$5,$6) as r',
+      [id, o.done ?? true, o.friction ?? FEEDBACK.friction, o.suggestion ?? FEEDBACK.suggestion, o.rating ?? 4, o.consent ?? false]));
+  } finally {
+    await q('delete from public.test_reservations where tester_id = $1 and consumed_at is null', [uid]);
+  }
+};
 ok(await failsWith(() => submit(A), 'own_campaign'), 'owner cannot test own project');
 ok(await failsWith(() => submit(B, { friction: 'short' }), 'invalid_feedback'), 'rejects too-short friction');
 ok(await failsWith(() => submit(B, { rating: 6 }), 'invalid_rating'), 'rejects rating 6');
@@ -145,7 +116,7 @@ ok((await as(B, () => q('select credit_balance from public.profiles')))[0].credi
 const res = (await submit(B))[0].r;
 ok(res.credits_awarded === 1 && res.balance === 2, 'valid submit awards 1 credit (starter 1 -> 2)');
 ok((await q('select status, response_count from public.campaigns where id=$1', [camp]))[0].status === 'completed', 'one-response campaign becomes completed');
-ok(await failsWith(() => submit(B), 'campaign_closed'), 'same tester cannot be rewarded twice');
+ok(await failsWith(() => submit(B), 'already_tested'), 'same tester cannot be rewarded twice (a retry is told it was already recorded)');
 ok(await failsWith(() => submit(C), 'campaign_closed'), 'second tester loses the race: campaign_closed, no credit');
 ok((await as(C, () => q('select credit_balance from public.profiles')))[0].credit_balance === 1, 'losing tester balance unchanged');
 ok(await failsWith(() => q(`insert into public.credit_ledger (user_id, delta, reason, campaign_id) values ($1, 1, 'test_reward', $2)`, [B, camp]), 'credit_ledger_one_reward'), 'unique index blocks duplicate reward (backstop)');
@@ -249,5 +220,4 @@ ok(drift2.length === 0, 'balance == SUM(ledger) for every user after all scenari
 const supply = (await q(`select coalesce(sum(credit_balance),0)::int s, (select count(*)::int from public.profiles) n, (select count(*)::int from public.campaigns where status='open') o from public.profiles`))[0];
 ok(supply.s + supply.o === supply.n, `credits are conserved: balances(${supply.s}) + open campaigns holding a credit(${supply.o}) == identities(${supply.n})`);
 
-console.log(`\n${passed} passed, ${failed} failed`);
-process.exit(failed ? 1 : 0);
+summary();

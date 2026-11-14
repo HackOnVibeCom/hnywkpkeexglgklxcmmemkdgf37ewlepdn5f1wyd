@@ -101,7 +101,7 @@ export function Landing() {
             </li>
             <li>
               <strong className="text-slate-800">Not abuse-proof.</strong> Anonymous identities cannot fully stop one
-              person from creating several. We block self-testing and repeat rewards per identity, nothing more.
+              person from creating several. We block self-testing and repeat rewards, hold each task for one tester at a time, require at least a minute of testing and cap rewards at 5 tests per 24 hours per identity — but that is as far as anonymous identities go.
             </li>
             <li>
               <strong className="text-slate-800">No fake data.</strong> Everything you see comes from real people using

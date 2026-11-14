@@ -1,24 +1,34 @@
 # PeerProbe — project state
 
-_Last updated: 2026-11-13 (branch `feat/peerprobe-mvp`, not pushed)_
+_Last updated: 2026-11-14 (branch `feat/peerprobe-mvp`, not pushed). Stable checkpoint commit: `120b943` (tested MVP). Phase 1 work below is UNCOMMITTED._
 
 ## What exists
 - Vite + React 19 + TS + Tailwind 4 SPA, 5 screens: Landing, Discover, CreateTask, TestTask, Dashboard.
-- Supabase migrations (schema / RLS / atomic RPCs) in `supabase/migrations/`; PGlite test-suite in `supabase/tests/` (118 assertions green; independent security review done — no CRITICAL/HIGH; fixed: expired-session identity overwrite, whitespace-only inputs, future-object default privileges, build-time secret-key guard).
-- Auto anonymous auth bootstrap (`src/context/AuthContext.tsx`): `getSession` → `signInAnonymously` if none → `ensure_profile` RPC. Singleton promise guards StrictMode double-run.
-- When env missing/placeholder/secret-key: app shows "Backend not configured" (never mock data).
+- Supabase migrations 1-3 (schema / RLS / atomic RPCs) **applied to the live project** (ref `zrzkacgarquzbemsnosw`; Data API on, auto table exposure OFF, auto RLS ON, anonymous sign-ins ON) and verified end-to-end on 2026-11-13 (API 54/54, real browser 23/23, true parallel races).
+- Auto anonymous auth bootstrap (`src/context/AuthContext.tsx`): `getSession` → `signInAnonymously` if none → `ensure_profile` RPC.
+- When env missing/placeholder/secret-key: app shows "Backend not configured" (never mock data). Local `.env.local` (gitignored) holds URL + publishable key.
+
+## Phase 1 (2026-11-14) — implemented locally, NOT applied to the live DB, NOT committed
+New migration `supabase/migrations/20261114000100_lifecycle_antiabuse.sql` (+ UI): 7-day expiry, 15-min reservations (`start_test`, `test_reservations`), URL revealed only to the reservation holder, 60 s minimum testing time, 5 rewarded tests / rolling 24 h, `cancel_campaign` + `settle_expired_campaigns` (refund exactly once via `close_campaign_refund`), `get_my_status`; Discover/Dashboard/TestTask UI; drafts kept in sessionStorage.
+- Tests: `npm run test:db` = 119 core + 118 lifecycle + 19 upgrade-rehearsal assertions (PGlite); `npm run test:browser` = 58 + 77 (real Chrome, stubbed API); `tests/live/live-e2e.mjs` (57 checks) validated only against a local PostgREST emulator, **not yet run against the real project**. Mutation-tested: 25/26 mutants caught (survivor = lock-skip deadlock fix, only observable under real concurrency).
+- Independent security review (reviewer-security): no CRITICAL/HIGH. Fixed from it: settle-vs-settle deadlock (profile `SKIP LOCKED`), poison-campaign isolation, already_tested on lost-response retry, `clock_timestamp()` after lock waits, stale drafts. Accepted/documented: Sybil reservation griefing (needs Turnstile), lazy settlement, identity purge cascades feedback.
+- **Next step needs user approval:** `supabase db push --dry-run --remote` → apply migration 4 → run `PEERPROBE_LIVE_TESTS=1 node tests/live/live-e2e.mjs` → manual expiry check (README) → commit. Apply migration 4 and deploy the UI together (old UI can't submit, new UI needs the new RPCs).
 
 ## Not done / blocked
-- **Live Supabase project verified (2026-11-13):** project ref `zrzkacgarquzbemsnosw`, settings: Data API on, auto table exposure OFF, auto RLS ON, anonymous sign-ins ON. 3 migrations applied (migration 2 now also has `grant usage on schema public to authenticated`, needed when exposure is off). Real-API script 54/54 and real-browser two-session run 23/23 passed, incl. true parallel races (one winner; no overspend; starter credit once). Local `.env.local` (gitignored) holds URL + publishable key. Still TODO: committed `.env.production` for the Cloudflare deploy (needs user approval to commit/push).
-- E2E left test rows in the live DB (6+ anonymous identities, closed campaigns, test feedback). No open campaigns remain.
-- Deploy env injection: CI can't pass env; needs committed `.env.production` (public values) or `BUILD_CMD` repo var.
-- AI summary (Edge Function), referrals, proof cards, CAPTCHA on anonymous sign-in, claim/reservation of a task, cancel/refund: all post-MVP.
-
-## Open review findings (need product decisions)
-- M1 single identity can drain campaigns with junk feedback (needs start_test + min time, rate cap, founder dispute/refund).
-- M2 feed starvation (needs expiry, cancel_campaign + refund, pagination, per-owner cap).
-- Also: CSP, `.wrangler/cache` tracked with account email (user forbade touching it), multi-tab first-visit double identity.
+- Deploy env injection: CI can't pass env; needs committed `.env.production` (public values) or `BUILD_CMD` repo var (needs user approval to commit/push; push to `main` = production deploy).
+- Phase 2 (approved direction, ADR-007): Cloudflare Turnstile on anonymous sign-in (user creates keys; secret only in the Supabase dashboard), referral links, shareable consent-gated proof card (needs an anon-callable RPC → ask first).
+- AI summary (Edge Function) — post-MVP.
+- Live DB contains E2E test rows (≈10 anonymous identities, closed campaigns, test feedback); no open campaigns.
 
 ## Known risks
-- Anonymous identity ≠ anti-Sybil: unlimited starter credits via new incognito identities; self-farming from a second identity possible. Documented in README/UI.
-- One-response campaign race: loser of a simultaneous submit loses typed feedback and gets no credit.
+- Anonymous identity ≠ anti-Sybil: unlimited starter credits via new incognito identities; many identities can also grief reservations. Mitigation planned: Turnstile. Documented in README/UI.
+- Feedback quality is only length-validated; no founder dispute/clawback.
+- CSP not set; `.wrangler/cache` tracked with an account email (user forbade touching it); multi-tab first visit can create two identities.
+
+## PRE-LAUNCH SECURITY CHECKLIST (must be resolved or explicitly accepted before real users)
+- [ ] Anonymous-user deletion cascade: `test_submissions`, `credit_ledger`, `profiles`, `projects`, `campaigns` all cascade from `auth.users` (ON DELETE CASCADE, migration 1). Purging/deleting anonymous users in the Supabase dashboard (or any auth cleanup job) silently DELETES their feedback and ledger history, which also breaks "never delete feedback" and credit conservation. Before launch: document "never purge anonymous users", and/or add a migration that preserves feedback (e.g. anonymise tester_id / ON DELETE SET NULL / retention table). Export feedback before any purge.
+- [ ] Cloudflare Turnstile on anonymous sign-in (Sybil starter credits + reservation griefing).
+- [ ] CSP header in public/_headers once the Supabase URL is final.
+- [ ] `.wrangler/cache` is tracked and contains an account email (user forbade editing it).
+- [ ] Multi-tab first visit can create two anonymous identities (orphan identity, no credit).
+- [ ] Apply migration 4 together with the matching UI; run tests/live/live-e2e.mjs on the real project; manual expiry check (README).

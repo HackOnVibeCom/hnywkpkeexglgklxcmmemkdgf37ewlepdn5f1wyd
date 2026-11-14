@@ -1,12 +1,16 @@
 import { getSupabase } from './supabase';
+import { DAILY_REWARD_CAP, MIN_TEST_SECONDS, RESERVATION_MINUTES } from './limits';
 import type {
   CampaignForTest,
+  CancelResult,
   CreateCampaignInput,
   DashboardData,
   LedgerEntry,
   MyCampaign,
+  MyStatus,
   OpenCampaign,
   Profile,
+  StartTestResult,
   SubmitTestInput,
   SubmitTestResult,
   Submission,
@@ -17,6 +21,8 @@ export class ApiError extends Error {
   constructor(
     message: string,
     public readonly code?: string,
+    /** Extra data raised with the error (e.g. seconds left for too_fast, blocking campaign id). */
+    public readonly detail?: string,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -34,12 +40,25 @@ const FRIENDLY: Record<string, string> = {
   invalid_rating: 'Choose a rating from 1 to 5.',
   insufficient_credits: 'You need 1 credit to request a test. Test someone else’s product to earn one.',
   campaign_not_found: 'This task no longer exists.',
-  campaign_closed: 'Someone else just completed this task first, so it is closed. No credit was spent or earned — pick another task.',
+  campaign_closed: 'This task is no longer open (it was completed, cancelled or expired). No credit was spent or earned — pick another task.',
   own_campaign: 'You cannot test your own project.',
-  already_tested: 'You already tested this task.',
+  already_tested: 'Your feedback for this task was already recorded and your credit was awarded — nothing more to do here.',
+  campaign_expired: 'This task has expired and can no longer be started.',
+  campaign_reserved: 'Another tester is working on this task right now. Please try again in a few minutes, or pick another task.',
+  reservation_exists: 'You already have a test in progress. Finish it (or let it time out) before starting another one.',
+  reservation_required: 'Reserve this task first, then submit your feedback.',
+  reservation_expired: `Your ${RESERVATION_MINUTES}-minute reservation ran out. Your answers are still here — reserve the task again to submit them.`,
+  reservation_limit: 'You have already reserved this task three times. Please pick another task.',
+  daily_limit: `You have reached today’s limit of ${DAILY_REWARD_CAP} rewarded tests (rolling 24 hours). You can start testing again when the oldest one is more than 24 hours old.`,
+  refund_not_found: 'Could not refund this request. Nothing was changed — please contact support.',
 };
 
 export function friendlyError(e: unknown): string {
+  if (e instanceof ApiError && e.code === 'too_fast') {
+    const left = Number(e.detail);
+    const wait = Number.isFinite(left) && left > 0 ? ` About ${Math.ceil(left)} more second${Math.ceil(left) === 1 ? '' : 's'}.` : '';
+    return `Please spend at least ${MIN_TEST_SECONDS} seconds actually testing before you submit.${wait}`;
+  }
   if (e instanceof ApiError && e.code && FRIENDLY[e.code]) return FRIENDLY[e.code];
   const msg = e instanceof Error ? e.message : String(e);
   if (/anonymous sign-ins are disabled/i.test(msg)) {
@@ -53,7 +72,7 @@ export function friendlyError(e: unknown): string {
 
 async function rpc<T>(fn: string, args?: Record<string, unknown>): Promise<T> {
   const { data, error } = await getSupabase().rpc(fn, args);
-  if (error) throw new ApiError(error.message, error.message);
+  if (error) throw new ApiError(error.message, error.message, error.details ?? undefined);
   return data as T;
 }
 
@@ -71,6 +90,25 @@ export async function fetchProfile(): Promise<Profile> {
 }
 
 export const listOpenCampaigns = () => rpc<OpenCampaign[]>('list_open_campaigns');
+
+export const getMyStatus = () => rpc<MyStatus>('get_my_status');
+
+export const startTest = (campaignId: string) => rpc<StartTestResult>('start_test', { p_campaign_id: campaignId });
+
+export const cancelCampaign = (campaignId: string) => rpc<CancelResult>('cancel_campaign', { p_campaign_id: campaignId });
+
+/**
+ * Expires + refunds campaigns past their deadline that nobody is testing. Idempotent and bounded
+ * server-side; any signed-in client may call it. Returns how many campaigns were settled.
+ * Failures are deliberately swallowed: settlement is housekeeping and must never block a page.
+ */
+export async function settleExpiredCampaigns(): Promise<number> {
+  try {
+    return (await rpc<number>('settle_expired_campaigns')) ?? 0;
+  } catch {
+    return 0;
+  }
+}
 
 export async function getCampaignForTest(campaignId: string): Promise<CampaignForTest | null> {
   const rows = await rpc<CampaignForTest[]>('get_campaign_for_test', { p_campaign_id: campaignId });
@@ -98,7 +136,7 @@ export const submitTest = (i: SubmitTestInput) =>
 export async function fetchDashboard(): Promise<DashboardData> {
   const sb = getSupabase();
 
-  const [ledgerRes, rewardCountRes, campaignsRes] = await Promise.all([
+  const [ledgerRes, rewardCountRes, campaignsRes, reservationsRes] = await Promise.all([
     sb
       .from('credit_ledger')
       .select('id,delta,reason,campaign_id,created_at')
@@ -108,16 +146,24 @@ export async function fetchDashboard(): Promise<DashboardData> {
     sb
       .from('campaigns')
       .select(
-        'id,task_description,status,max_responses,response_count,created_at,completed_at,project:projects(name,url,description)',
+        'id,task_description,status,max_responses,response_count,created_at,expires_at,completed_at,closed_at,project:projects(name,url,description)',
       )
       .order('created_at', { ascending: false }),
+    // Founders may see THAT a test is in progress (never who): tester_id is not granted.
+    sb.from('test_reservations').select('campaign_id,expires_at,consumed_at').is('consumed_at', null),
   ]);
 
-  for (const r of [ledgerRes, rewardCountRes, campaignsRes]) {
+  for (const r of [ledgerRes, rewardCountRes, campaignsRes, reservationsRes]) {
     if (r.error) throw new ApiError(r.error.message, r.error.code);
   }
 
-  const rawCampaigns = (campaignsRes.data ?? []) as unknown as Omit<MyCampaign, 'submissions'>[];
+  const rawCampaigns = (campaignsRes.data ?? []) as unknown as Omit<MyCampaign, 'submissions' | 'being_tested'>[];
+  const nowMs = Date.now();
+  const beingTested = new Set(
+    ((reservationsRes.data ?? []) as { campaign_id: string; expires_at: string }[])
+      .filter((r) => Date.parse(r.expires_at) > nowMs)
+      .map((r) => r.campaign_id),
+  );
   const ids = rawCampaigns.map((c) => c.id);
 
   let submissions: Submission[] = [];
@@ -137,6 +183,7 @@ export async function fetchDashboard(): Promise<DashboardData> {
     campaigns: rawCampaigns.map((c) => ({
       ...c,
       submissions: submissions.filter((s) => s.campaign_id === c.id),
+      being_tested: beingTested.has(c.id),
     })),
   };
 }

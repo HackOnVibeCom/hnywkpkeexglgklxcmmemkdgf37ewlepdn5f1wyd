@@ -1,0 +1,12 @@
+{
+  "name": "peerprobe-browser-tests",
+  "private": true,
+  "type": "module",
+  "description": "Real-Chrome tests of the built app. Uses a STUBBED Supabase API, so they verify UI wiring and behaviour, not the database (see supabase/tests for that). Separate package: never part of the Cloudflare build.",
+  "scripts": {
+    "test": "node run.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.50.0"
+  }
+}

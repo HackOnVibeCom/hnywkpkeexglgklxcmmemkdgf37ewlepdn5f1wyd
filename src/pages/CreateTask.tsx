@@ -4,6 +4,7 @@ import { Field } from '../components/form';
 import { Alert, Button, ButtonLink, PageHeader } from '../components/ui';
 import { useAuth } from '../context/AuthContext';
 import { createCampaign, fetchProfile, friendlyError } from '../lib/api';
+import { CAMPAIGN_EXPIRY_DAYS } from '../lib/limits';
 import { LIMITS, isValidPublicUrl, lengthBetween } from '../lib/validation';
 
 interface Errors {
@@ -69,7 +70,8 @@ export function CreateTask() {
       <div className="mb-6">
         {canAfford ? (
           <Alert tone="info">
-            This costs <strong>1 credit</strong>. You have <strong>{balance}</strong>.
+            This costs <strong>1 credit</strong>. You have <strong>{balance}</strong>. Your request stays open for{' '}
+            {CAMPAIGN_EXPIRY_DAYS} days; if nobody tests it, or you cancel while nobody is testing it, the credit is refunded.
           </Alert>
         ) : (
           <Alert tone="warning" title="You have 0 credits">

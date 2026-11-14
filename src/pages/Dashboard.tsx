@@ -1,23 +1,39 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Alert, Button, ButtonLink, EmptyState, ExternalLink, PageHeader, Spinner } from '../components/ui';
 import { useAuth } from '../context/AuthContext';
-import { fetchDashboard, fetchProfile } from '../lib/api';
-import { hostOf, plural, timeAgo } from '../lib/format';
-import type { CampaignStatus, LedgerReason, MyCampaign, Submission } from '../lib/types';
+import { cancelCampaign, fetchDashboard, fetchProfile, friendlyError, settleExpiredCampaigns } from '../lib/api';
+import { hostOf, plural, timeAgo, timeLeft } from '../lib/format';
+import { CAMPAIGN_EXPIRY_DAYS } from '../lib/limits';
+import type { LedgerReason, MyCampaign, Submission } from '../lib/types';
 import { useLoad } from '../lib/useLoad';
+import { useNow } from '../lib/useNow';
 
 const REASON_LABEL: Record<LedgerReason, string> = {
   starter: 'Starter credit',
   test_reward: 'Earned — completed a test',
   campaign_spend: 'Spent — requested a test',
+  campaign_refund: 'Refunded — request cancelled or expired with no feedback',
 };
 
-const STATUS: Record<CampaignStatus, { label: string; cls: string }> = {
-  open: { label: 'Waiting for a tester', cls: 'bg-amber-50 text-amber-800 border-amber-200' },
-  completed: { label: 'Tested', cls: 'bg-emerald-50 text-emerald-800 border-emerald-200' },
-  cancelled: { label: 'Cancelled', cls: 'bg-slate-100 text-slate-600 border-slate-200' },
-};
+const AMBER = 'bg-amber-50 text-amber-800 border-amber-200';
+const GREY = 'bg-slate-100 text-slate-600 border-slate-200';
+
+/** What the founder should see for a campaign right now (open + past deadline = refund pending). */
+function describeStatus(c: MyCampaign, nowMs: number): { label: string; cls: string } {
+  switch (c.status) {
+    case 'completed':
+      return { label: 'Tested', cls: 'bg-emerald-50 text-emerald-800 border-emerald-200' };
+    case 'cancelled':
+      return { label: 'Cancelled — credit refunded', cls: GREY };
+    case 'expired':
+      return { label: 'Expired — credit refunded', cls: GREY };
+    case 'open':
+      if (c.being_tested) return { label: 'A tester is working on this', cls: 'bg-indigo-50 text-indigo-800 border-indigo-200' };
+      if (Date.parse(c.expires_at) <= nowMs) return { label: 'Expired — refund pending', cls: AMBER };
+      return { label: 'Waiting for a tester', cls: AMBER };
+  }
+}
 
 function Stars({ value }: { value: number }) {
   return (
@@ -62,8 +78,29 @@ function FeedbackBlock({ s }: { s: Submission }) {
   );
 }
 
-function CampaignCard({ c }: { c: MyCampaign }) {
-  const st = STATUS[c.status];
+function CampaignCard({ c, nowMs, onChanged }: { c: MyCampaign; nowMs: number; onChanged: () => void }) {
+  const { setBalance } = useAuth();
+  const st = describeStatus(c, nowMs);
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
+
+  async function onCancel() {
+    setBusy(true);
+    setCancelError(null);
+    try {
+      const res = await cancelCampaign(c.id);
+      setBalance(res.balance);
+      setConfirming(false);
+      onChanged();
+    } catch (err) {
+      setCancelError(friendlyError(err));
+      onChanged(); // the server state may have changed (e.g. a tester just reserved it)
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <li className="rounded-xl border border-slate-200 bg-white p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -81,7 +118,38 @@ function CampaignCard({ c }: { c: MyCampaign }) {
       <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-800">{c.task_description}</p>
       <p className="mt-2 text-xs text-slate-400">
         Requested {timeAgo(c.created_at)} · {c.response_count}/{c.max_responses} responses
+        {c.status === 'open' && !c.being_tested && Date.parse(c.expires_at) > nowMs && <> · expires {timeLeft(c.expires_at, nowMs).replace(' left', '')} from now</>}
+        {c.status === 'open' && Date.parse(c.expires_at) > nowMs && <> · 1 credit is refunded if nobody tests it in {CAMPAIGN_EXPIRY_DAYS} days</>}
       </p>
+
+      {c.status === 'open' && (
+        <div className="mt-3">
+          {c.being_tested ? (
+            <p className="text-xs text-slate-500">
+              A tester is working on this right now, so it can’t be cancelled until their reservation ends.
+            </p>
+          ) : confirming ? (
+            <div className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm">
+              <span className="text-amber-900">Cancel this request and get your 1 credit back?</span>
+              <Button variant="primary" onClick={onCancel} disabled={busy}>
+                {busy ? 'Cancelling…' : 'Yes, cancel & refund'}
+              </Button>
+              <Button variant="secondary" onClick={() => setConfirming(false)} disabled={busy}>
+                Keep it
+              </Button>
+            </div>
+          ) : (
+            <Button variant="secondary" onClick={() => setConfirming(true)}>
+              Cancel & refund
+            </Button>
+          )}
+          {cancelError && (
+            <div className="mt-2">
+              <Alert tone="error">{cancelError}</Alert>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="mt-4">
         {c.submissions.length === 0 ? (
@@ -104,7 +172,12 @@ export function Dashboard() {
   const { profile, setBalance } = useAuth();
   const location = useLocation();
   const justCreated = (location.state as { justCreated?: boolean } | null)?.justCreated === true;
-  const { data, error, loading, reload } = useLoad(fetchDashboard);
+  const nowMs = useNow(30_000);
+  // Settle first so campaigns that expired while the founder was away are refunded before we render.
+  const { data, error, loading, reload } = useLoad(async () => {
+    await settleExpiredCampaigns();
+    return fetchDashboard();
+  });
 
   // Keep the header balance authoritative after any reload of this page.
   useEffect(() => {
@@ -189,7 +262,7 @@ export function Dashboard() {
               ) : (
                 <ul className="space-y-4">
                   {data.campaigns.map((c) => (
-                    <CampaignCard key={c.id} c={c} />
+                    <CampaignCard key={c.id} c={c} nowMs={nowMs} onChanged={reload} />
                   ))}
                 </ul>
               )}

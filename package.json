@@ -12,7 +12,8 @@
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b",
     "preview": "vite preview",
-    "test:db": "npm --prefix supabase/tests install && npm --prefix supabase/tests test"
+    "test:db": "npm --prefix supabase/tests install && npm --prefix supabase/tests test",
+    "test:browser": "npm --prefix tests/browser install && npm --prefix tests/browser test"
   },
   "dependencies": {
     "@supabase/supabase-js": "~2.105.0",
