@@ -1,0 +1,253 @@
+// Executes the real migration files in real Postgres (PGlite) and asserts the
+// security/atomicity guarantees. The Supabase-specific pieces are stubbed:
+//   roles anon / authenticated / service_role, schema auth, auth.users, auth.uid().
+// auth.uid() reads request.jwt.claim.sub — the same GUC PostgREST sets per request.
+//
+// Limits: PGlite is single-connection, so true parallel races cannot be
+// exercised here. Exactly-once behaviour under concurrency is enforced by row
+// locks + unique indexes; the tests check those constraints directly.
+
+import { PGlite } from '@electric-sql/pglite';
+import { readFileSync, readdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const migDir = join(here, '..', 'migrations');
+
+const db = new PGlite();
+
+await db.exec(`
+  create role anon nologin;
+  create role authenticated nologin;
+  create role service_role nologin bypassrls;
+  create schema auth;
+  create table auth.users (id uuid primary key);
+  create function auth.uid() returns uuid language sql stable
+    as $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
+  grant usage on schema auth to anon, authenticated;
+  grant execute on function auth.uid() to anon, authenticated;
+  grant usage on schema public to anon, authenticated;
+  -- Mimic Supabase default privileges (broad grants that our migrations must revoke).
+  alter default privileges in schema public grant all on tables to anon, authenticated;
+  alter default privileges in schema public grant all on functions to anon, authenticated;
+`);
+
+for (const f of readdirSync(migDir).filter((n) => n.endsWith('.sql')).sort()) {
+  await db.exec(readFileSync(join(migDir, f), 'utf8'));
+  console.log(`applied ${f}`);
+}
+
+const A = '00000000-0000-0000-0000-00000000000a';
+const B = '00000000-0000-0000-0000-00000000000b';
+const C = '00000000-0000-0000-0000-00000000000c';
+for (const u of [A, B, C]) await db.query('insert into auth.users (id) values ($1)', [u]);
+
+let passed = 0;
+let failed = 0;
+const ok = (cond, name, extra = '') => {
+  if (cond) { passed++; console.log(`  PASS  ${name}`); }
+  else { failed++; console.log(`  FAIL  ${name} ${extra}`); }
+};
+
+/** Run SQL as a given identity (role + jwt sub). uid=null → role anon. */
+async function as(uid, fn) {
+  await db.exec(`set role ${uid ? 'authenticated' : 'anon'}`);
+  await db.query(`select set_config('request.jwt.claim.sub', $1, false)`, [uid ?? '']);
+  try { return await fn(); }
+  finally { await db.exec('reset role'); }
+}
+const q = (sql, params) => db.query(sql, params).then((r) => r.rows);
+const fails = async (fn) => { try { await fn(); return null; } catch (e) { return String(e.message); } };
+const failsWith = async (fn, code) => (await fails(fn))?.includes(code) ?? false;
+
+const GOOD_URL = 'https://example.com/app';
+const TASK = 'Find the pricing page and tell me which plan you would pick.';
+const FEEDBACK = { friction: 'The pricing link was hidden in the footer.', suggestion: 'Add a pricing link to the top nav.' };
+
+console.log('\n[anon role]');
+ok(await failsWith(() => as(null, () => q('select * from public.profiles')), 'permission denied'), 'anon cannot read profiles');
+ok(await failsWith(() => as(null, () => q('select public.ensure_profile()')), 'permission denied'), 'anon cannot call ensure_profile');
+ok(await failsWith(() => as(null, () => q('select * from public.list_open_campaigns()')), 'permission denied'), 'anon cannot list campaigns');
+
+console.log('\n[starter credit]');
+const p1 = await as(A, () => q('select * from public.ensure_profile()'));
+ok(p1[0].credit_balance === 1, 'first ensure_profile grants balance 1');
+await as(A, () => q('select * from public.ensure_profile()'));
+await as(A, () => q('select * from public.ensure_profile()'));
+const starters = await q(`select count(*)::int n from public.credit_ledger where user_id=$1 and reason='starter'`, [A]);
+ok(starters[0].n === 1, 'repeated ensure_profile -> exactly one starter ledger row');
+ok((await as(A, () => q('select credit_balance from public.profiles')))[0].credit_balance === 1, 'balance still 1 after repeats');
+ok(await failsWith(() => q(`insert into public.credit_ledger (user_id, delta, reason) values ($1, 1, 'starter')`, [A]), 'credit_ledger_one_starter'), 'unique index blocks a 2nd starter row (backstop)');
+await db.exec('set role authenticated');
+await db.query(`select set_config('request.jwt.claim.sub', '', false)`);
+ok(await failsWith(() => q('select public.ensure_profile()'), 'not_authenticated'), 'authenticated role without a JWT subject is rejected');
+await db.exec('reset role');
+
+console.log('\n[no direct writes from clients]');
+for (const [name, sql] of [
+  ['insert profile', `insert into public.profiles (id, credit_balance) values ('${C}', 100)`],
+  ['update own balance', `update public.profiles set credit_balance = 999`],
+  ['insert ledger', `insert into public.credit_ledger (user_id, delta, reason) values ('${A}', 5, 'test_reward')`],
+  ['insert project', `insert into public.projects (owner_id, name, url) values ('${A}', 'xx', '${GOOD_URL}')`],
+  ['insert submission', `insert into public.test_submissions (campaign_id, tester_id, task_completed, friction, suggestion, ux_rating) values (gen_random_uuid(), '${A}', true, 'aaaaaaaaaa', 'bbbbbbbbbb', 5)`],
+  ['delete ledger', `delete from public.credit_ledger`],
+]) {
+  ok(await failsWith(() => as(A, () => q(sql)), 'permission denied'), `authenticated cannot ${name}`);
+}
+
+console.log('\n[create campaign: validation + spend]');
+const create = (uid, o = {}) => as(uid, () => q(
+  'select public.create_project_with_campaign($1,$2,$3,$4) as id',
+  [o.name ?? 'Acme', o.url ?? GOOD_URL, o.desc ?? 'A thing', o.task ?? TASK]));
+for (const bad of ['http://localhost:3000', 'http://127.0.0.1', 'javascript:alert(1)', 'ftp://example.com', 'https://user:pw@example.com', 'https://nodot', 'https://exa mple.com', 'data:text/html,hi', 'http://10.0.0.1/x']) {
+  ok(await failsWith(() => create(A, { url: bad }), 'invalid_url'), `rejects url ${bad}`);
+}
+ok(await failsWith(() => create(A, { name: 'x' }), 'invalid_name'), 'rejects 1-char name');
+ok(await failsWith(() => create(A, { task: 'too short' }), 'invalid_task'), 'rejects short task');
+ok((await as(A, () => q('select credit_balance from public.profiles')))[0].credit_balance === 1, 'failed creates do not spend credit');
+ok(await failsWith(() => create(B), 'profile_missing'), 'identity without profile cannot create');
+
+const camp = (await create(A))[0].id;
+ok(typeof camp === 'string', 'create succeeds with 1 credit');
+ok((await as(A, () => q('select credit_balance from public.profiles')))[0].credit_balance === 0, 'balance is 0 after spending');
+ok(await failsWith(() => create(A), 'insufficient_credits'), 'second create fails: insufficient_credits');
+ok((await q('select count(*)::int n from public.projects'))[0].n === 1, 'failed create left no orphan project row');
+
+console.log('\n[RLS read isolation]');
+await as(B, () => q('select * from public.ensure_profile()'));
+await as(C, () => q('select * from public.ensure_profile()'));
+ok((await as(B, () => q('select * from public.campaigns'))).length === 0, "B cannot read A's campaigns table");
+ok((await as(B, () => q('select * from public.projects'))).length === 0, "B cannot read A's projects table");
+ok((await as(A, () => q('select * from public.projects'))).length === 1, 'A reads own project');
+ok((await as(B, () => q('select * from public.profiles'))).length === 1, 'B sees only own profile row');
+ok((await as(B, () => q('select * from public.credit_ledger'))).every((r) => r.user_id === B), 'B sees only own ledger rows');
+
+console.log('\n[discovery]');
+ok((await as(A, () => q('select * from public.list_open_campaigns()'))).length === 0, "owner does not see own campaign in feed");
+const feed = await as(B, () => q('select * from public.list_open_campaigns()'));
+ok(feed.length === 1 && feed[0].campaign_id === camp, 'other user sees the open campaign');
+ok(!('project_url' in feed[0]) && !('owner_id' in feed[0]), 'feed leaks neither url nor owner id');
+ok((await as(B, () => q('select * from public.get_campaign_for_test($1)', [camp])))[0].project_url === GOOD_URL, 'test page RPC returns url to eligible tester');
+ok((await as(A, () => q('select * from public.get_campaign_for_test($1)', [camp]))).length === 0, 'owner cannot fetch own campaign for testing');
+
+console.log('\n[submit_test]');
+const submit = (uid, o = {}) => as(uid, () => q(
+  'select public.submit_test($1,$2,$3,$4,$5,$6) as r',
+  [o.id ?? camp, o.done ?? true, o.friction ?? FEEDBACK.friction, o.suggestion ?? FEEDBACK.suggestion, o.rating ?? 4, o.consent ?? false]));
+ok(await failsWith(() => submit(A), 'own_campaign'), 'owner cannot test own project');
+ok(await failsWith(() => submit(B, { friction: 'short' }), 'invalid_feedback'), 'rejects too-short friction');
+ok(await failsWith(() => submit(B, { rating: 6 }), 'invalid_rating'), 'rejects rating 6');
+ok(await failsWith(() => submit(B, { rating: 0 }), 'invalid_rating'), 'rejects rating 0');
+ok(await failsWith(() => submit(B, { id: '11111111-1111-1111-1111-111111111111' }), 'campaign_not_found'), 'unknown campaign rejected');
+ok((await as(B, () => q('select credit_balance from public.profiles')))[0].credit_balance === 1, 'rejected submits award nothing');
+
+const res = (await submit(B))[0].r;
+ok(res.credits_awarded === 1 && res.balance === 2, 'valid submit awards 1 credit (starter 1 -> 2)');
+ok((await q('select status, response_count from public.campaigns where id=$1', [camp]))[0].status === 'completed', 'one-response campaign becomes completed');
+ok(await failsWith(() => submit(B), 'campaign_closed'), 'same tester cannot be rewarded twice');
+ok(await failsWith(() => submit(C), 'campaign_closed'), 'second tester loses the race: campaign_closed, no credit');
+ok((await as(C, () => q('select credit_balance from public.profiles')))[0].credit_balance === 1, 'losing tester balance unchanged');
+ok(await failsWith(() => q(`insert into public.credit_ledger (user_id, delta, reason, campaign_id) values ($1, 1, 'test_reward', $2)`, [B, camp]), 'credit_ledger_one_reward'), 'unique index blocks duplicate reward (backstop)');
+ok(await failsWith(() => q(`insert into public.test_submissions (campaign_id, tester_id, task_completed, friction, suggestion, ux_rating) values ($1,$2,true,'aaaaaaaaaa','bbbbbbbbbb',3)`, [camp, B]), 'test_submissions_one_per_tester'), 'unique constraint: one submission per tester per campaign');
+ok(await failsWith(() => q(`insert into public.test_submissions (campaign_id, tester_id, task_completed, friction, suggestion, ux_rating) values ($1,$2,true,'aaaaaaaaaa','bbbbbbbbbb',3)`, [camp, A]), 'own_campaign'), 'trigger blocks self-test even on a direct insert');
+ok((await as(B, () => q('select * from public.list_open_campaigns()'))).length === 0, 'completed campaign leaves the feed');
+
+console.log('\n[submission visibility]');
+const subCols = 'id, campaign_id, task_completed, friction, suggestion, ux_rating, share_consent, created_at';
+ok((await as(A, () => q(`select ${subCols} from public.test_submissions`))).length === 1, 'founder reads feedback on own campaign');
+ok((await as(B, () => q(`select ${subCols} from public.test_submissions`))).length === 1, 'tester reads own submission');
+ok((await as(C, () => q(`select ${subCols} from public.test_submissions`))).length === 0, 'unrelated user sees no submissions');
+ok(await failsWith(() => as(A, () => q('select tester_id from public.test_submissions')), 'permission denied'), 'founder cannot read tester_id (testers stay anonymous)');
+ok((await as(A, () => q(`select share_consent from public.test_submissions`)))[0].share_consent === false, 'share_consent defaults to false (private)');
+
+console.log('\n[ledger invariants]');
+const drift = await q(`
+  select p.id, p.credit_balance, coalesce(sum(l.delta),0)::int as ledger_sum
+  from public.profiles p left join public.credit_ledger l on l.user_id = p.id
+  group by p.id having p.credit_balance <> coalesce(sum(l.delta),0)`);
+ok(drift.length === 0, 'profiles.credit_balance == SUM(ledger) for every user', JSON.stringify(drift));
+ok(await failsWith(() => q(`update public.profiles set credit_balance = -1 where id = $1`, [A]), 'credit_balance_check'), 'negative balance impossible');
+
+// ───────────────────────── hardening added after security review ─────────────────────────
+const D = '00000000-0000-0000-0000-00000000000d';
+const E = '00000000-0000-0000-0000-00000000000e';
+for (const u of [D, E]) { await db.query('insert into auth.users (id) values ($1)', [u]); await as(u, () => q('select * from public.ensure_profile()')); }
+
+console.log('\n[whitespace-only input (btrim only strips spaces)]');
+for (const [label, ws] of [['newlines', '\n'.repeat(30)], ['tabs', '\t'.repeat(30)], ['NBSP', ' '.repeat(30)], ['zero-width', '​'.repeat(30)], ['mixed', ' \n\t ​'.repeat(8)]]) {
+  ok(await failsWith(() => create(D, { name: ws }), 'invalid_name'), `name of only ${label} rejected`);
+  ok(await failsWith(() => create(D, { task: ws }), 'invalid_task'), `task of only ${label} rejected`);
+}
+const camp2 = (await create(D))[0].id; // D spends starter
+for (const [label, ws] of [['newlines', '\n'.repeat(30)], ['NBSP', ' '.repeat(30)], ['zero-width', '​'.repeat(30)]]) {
+  ok(await failsWith(() => submit(E, { id: camp2, friction: ws }), 'invalid_feedback'), `feedback of only ${label} rejected`);
+}
+ok(await failsWith(() => q(`insert into public.test_submissions (campaign_id, tester_id, task_completed, friction, suggestion, ux_rating) values ($1,$2,true,$3,'bbbbbbbbbb',3)`, [camp2, E, '\n'.repeat(20)]), 'test_submissions_friction_check'), 'table CHECK also rejects whitespace-only friction');
+ok((await as(E, () => q('select credit_balance from public.profiles')))[0].credit_balance === 1, 'rejected whitespace feedback awarded nothing');
+
+console.log('\n[boundaries]');
+ok((await create(E, { name: 'ab', task: 'x'.repeat(20) }).catch(() => null)) !== null, 'min-length name (2) and task (20) accepted');
+const F = '00000000-0000-0000-0000-00000000000f';
+await db.query('insert into auth.users (id) values ($1)', [F]); await as(F, () => q('select * from public.ensure_profile()'));
+ok(await failsWith(() => create(F, { name: 'a'.repeat(81) }), 'invalid_name'), 'name of 81 chars rejected');
+ok(await failsWith(() => create(F, { task: 'x'.repeat(601) }), 'invalid_task'), 'task of 601 chars rejected');
+ok(await failsWith(() => create(F, { desc: 'x'.repeat(501) }), 'invalid_description'), 'description of 501 chars rejected');
+ok(await failsWith(() => create(F, { url: 'https://example.com/' + 'a'.repeat(2040) }), 'invalid_url'), 'url over 2048 chars rejected');
+ok(await failsWith(() => submit(F, { id: camp2, friction: 'x'.repeat(2001) }), 'invalid_feedback'), 'feedback over 2000 chars rejected');
+ok((await as(F, () => q('select credit_balance from public.profiles')))[0].credit_balance === 1, 'none of the rejected calls spent/earned credit');
+
+console.log('\n[anon role: EVERY function and table]');
+for (const call of [
+  `select public.create_project_with_campaign('ab','${GOOD_URL}','', '${TASK}')`,
+  `select public.submit_test('${camp2}', true, 'aaaaaaaaaa', 'bbbbbbbbbb', 3, false)`,
+  `select * from public.get_campaign_for_test('${camp2}')`,
+  `select public.is_valid_public_url('https://example.com')`,
+  `select public.trim_all('x')`,
+  `select * from public.projects`, `select * from public.campaigns`, `select * from public.credit_ledger`,
+  `select id from public.test_submissions`,
+]) ok(await failsWith(() => as(null, () => q(call)), 'permission denied'), `anon denied: ${call.slice(0, 60)}`);
+ok(await failsWith(() => as(D, () => q(`select public.is_valid_public_url('https://example.com')`)), 'permission denied'), 'authenticated cannot call is_valid_public_url directly');
+ok(await failsWith(() => as(D, () => q(`select public.trim_all('x')`)), 'permission denied'), 'authenticated cannot call trim_all directly');
+
+console.log('\n[authenticated: UPDATE / DELETE / TRUNCATE / select *]');
+for (const [name, sql] of [
+  ['update projects', `update public.projects set name='hacked name'`],
+  ['update campaigns', `update public.campaigns set status='open'`],
+  ['update submissions', `update public.test_submissions set ux_rating=5`],
+  ['update ledger', `update public.credit_ledger set delta=100`],
+  ['delete projects', `delete from public.projects`],
+  ['delete campaigns', `delete from public.campaigns`],
+  ['delete submissions', `delete from public.test_submissions`],
+  ['truncate ledger', `truncate public.credit_ledger`],
+]) ok(await failsWith(() => as(D, () => q(sql)), 'permission denied'), `authenticated cannot ${name}`);
+ok(await failsWith(() => as(A, () => q('select * from public.test_submissions')), 'permission denied'), 'select * on test_submissions is rejected (column grant)');
+ok(await failsWith(() => as(A, () => q('select id from public.test_submissions where tester_id is not null')), 'permission denied'), 'filtering on tester_id is rejected');
+ok(await failsWith(() => as(A, () => q('select id from public.test_submissions order by tester_id')), 'permission denied'), 'ordering by tester_id is rejected');
+
+console.log('\n[consent + cross-user reads]');
+const camp3 = (await create(F))[0].id; // F spends starter
+const r3 = (await submit(E, { id: camp3, consent: true }))[0].r;
+ok(r3.credits_awarded === 1, 'E earns a credit testing F');
+ok((await as(F, () => q(`select share_consent from public.test_submissions where campaign_id='${camp3}'`)))[0].share_consent === true, 'share_consent=true is stored when the tester opts in');
+ok((await as(D, () => q(`select id from public.test_submissions where campaign_id='${camp3}'`))).length === 0, "founder D cannot read founder F's feedback");
+ok((await as(F, () => q(`select id from public.test_submissions where campaign_id='${camp2}'`))).length === 0, "founder F cannot read founder D's campaign feedback");
+ok((await as(F, () => q(`select id from public.test_submissions`))).length === 1, 'F sees exactly their own campaign’s submission');
+ok(await failsWith(() => submit(D, { id: camp2 }), 'own_campaign'), 'D still cannot test own campaign');
+
+console.log('\n[future objects are not auto-exposed]');
+await db.exec(`create table public.future_table (id int); create function public.future_fn() returns int language sql as $$ select 1 $$;`);
+ok(await failsWith(() => as(D, () => q('select * from public.future_table')), 'permission denied'), 'new table is not readable by authenticated by default');
+ok(await failsWith(() => as(null, () => q('select public.future_fn()')), 'permission denied'), 'new function is not executable by anon by default');
+ok(await failsWith(() => as(D, () => q('select public.future_fn()')), 'permission denied'), 'new function is not executable by authenticated by default');
+
+console.log('\n[ledger invariants after multi-user churn]');
+const drift2 = await q(`
+  select p.id from public.profiles p left join public.credit_ledger l on l.user_id = p.id
+  group by p.id having p.credit_balance <> coalesce(sum(l.delta),0)`);
+ok(drift2.length === 0, 'balance == SUM(ledger) for every user after all scenarios');
+const supply = (await q(`select coalesce(sum(credit_balance),0)::int s, (select count(*)::int from public.profiles) n, (select count(*)::int from public.campaigns where status='open') o from public.profiles`))[0];
+ok(supply.s + supply.o === supply.n, `credits are conserved: balances(${supply.s}) + open campaigns holding a credit(${supply.o}) == identities(${supply.n})`);
+
+console.log(`\n${passed} passed, ${failed} failed`);
+process.exit(failed ? 1 : 0);

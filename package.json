@@ -1,0 +1,33 @@
+{
+  "name": "peerprobe",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "PeerProbe — a peer-to-peer human usability testing exchange. Test someone else's product, earn a credit, spend it to get yours tested.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b",
+    "preview": "vite preview",
+    "test:db": "npm --prefix supabase/tests install && npm --prefix supabase/tests test"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "~2.105.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-router-dom": "^7.0.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
+    "@types/node": "^20.19.43",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "tailwindcss": "^4.0.0",
+    "typescript": "~5.7.0",
+    "vite": "^6.0.0"
+  }
+}

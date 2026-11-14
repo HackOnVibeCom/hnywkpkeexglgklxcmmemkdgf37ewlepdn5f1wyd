@@ -1,0 +1,12 @@
+{
+  "name": "peerprobe-db-tests",
+  "private": true,
+  "type": "module",
+  "description": "Runs the Supabase migrations against real Postgres (PGlite/WASM) with a stubbed auth schema. Separate from the app so it never affects the Cloudflare build.",
+  "scripts": {
+    "test": "node run.mjs"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.3.0"
+  }
+}
