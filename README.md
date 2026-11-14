@@ -10,15 +10,16 @@
 
 **No registration, email, password or OAuth — ever.** Identity is a Supabase *Anonymous Auth* user created silently on first visit.
 
-> Built for HackOnVibe. Live site = Cloudflare Pages static deploy of `dist/` (see [Deployment](#deployment)).
+> Built for HackOnVibe. **Live site: <https://peerprobe.vercel.app>** — a static Vite build on Vercel, backend on Supabase, human check by Cloudflare Turnstile (see [Hosting on Vercel](#hosting-on-vercel-public-site)).
 
 ## Stack
 
 | Layer | Choice |
 |---|---|
 | Frontend | Vite + React 19 + TypeScript + Tailwind CSS 4 + React Router |
-| Hosting | Cloudflare Pages (static) via the existing GitHub Actions workflow — **not modified** |
+| Hosting | Vercel (static `dist/`, configured in `vercel.json`). The HackOnVibe GitHub Actions workflow (Cloudflare Pages) is **not modified**; it needs an organisation token this repository does not have, so it skips its deploy steps. |
 | Backend | Supabase: Postgres, Anonymous Auth, Row Level Security, SQL RPC functions |
+| Human check | Cloudflare Turnstile on the first anonymous sign-in, enforced server-side by Supabase CAPTCHA protection |
 | AI summaries | *Not built yet.* Planned as a Supabase Edge Function with a server-side key (never in the browser) |
 
 No SSR, Node server, WebRTC or PeerJS.
@@ -27,14 +28,14 @@ No SSR, Node server, WebRTC or PeerJS.
 
 | Area | State |
 |---|---|
-| Database schema, RLS, atomic RPCs (migrations 1–3) | Implemented, **applied to the project and verified end-to-end** (API script + real browser, incl. true parallel races). |
-| **Phase 1: campaign lifecycle + anti-abuse (migration 4)** | Implemented and tested locally. **NOT yet applied to the live project** — it needs your approval (see [Applying migration 4](#applying-migration-4-phase-1)). 7-day expiry, 15-min reservations, 60 s minimum testing time, 5 rewarded tests / rolling 24 h, cancel + refund (exactly once), expired/reserved campaigns never block Discover. |
-| **Phase 2: referrals, sharing, Turnstile** | Pushed to `feat/peerprobe-mvp`. Migration 5 (`20261114000200_referrals.sql`) is **applied to the production Supabase project** (2026-11-14) and verified live (44/44 referral + 57/57 earlier checks). Supabase CAPTCHA is still **off** (enable it only after the Turnstile-aware frontend is deployed); see [Growth](#growth-referral-links-and-sharing) and [Turnstile](#cloudflare-turnstile-human-check-on-first-sign-in). |
-| Automated tests | `npm run test:db` (PGlite: 119 core + 118 lifecycle + 19 upgrade-rehearsal assertions), `npm run test:browser` (real Chrome, stubbed API: 58 + 77 checks). Real-project test: `tests/live/live-e2e.mjs` (needs migration 4 applied). |
-| 5 screens (landing, discover, create, test, dashboard) | Implemented, typechecked, builds on Node 20. Layout checked in Chrome at 1280px and 360px. |
-| Deployed site | Shows an explicit "Backend not configured" notice until a `.env.production` with the public Supabase values is committed (nothing is mocked). |
+| Database schema, RLS, atomic RPCs (migrations 1–5) | **Applied to the production Supabase project and verified** with real-project scripts: 57 + 44 checks (true parallel races, one reward / refund per event, credit conservation) and a 19-check expiry/lapse run. |
+| **Phase 1: campaign lifecycle + anti-abuse** | Live (migration 4): 7-day expiry, 15-minute reservations, 60-second minimum testing time, 5 rewarded tests per rolling 24 h, founder cancel, refund exactly once, feedback never deleted. |
+| **Phase 2: referrals, sharing, Turnstile** | Live (migration 5 + frontend): referral links (3 rewarded referrals max), invite cards, a results card built in the browser, and Cloudflare Turnstile with Supabase CAPTCHA **enforced** (sign-ups without a valid token are rejected with HTTP 400). |
+| Automated tests | `npm run test:db` (PGlite: 119 core + 118 lifecycle + 91 referral + 31 upgrade-rehearsal assertions), `npm run test:browser` (real Chrome, stubbed API: 58 + 77 + 62 checks), `tests/browser/csp-check.mjs` (CSP policy under real Chrome). Real-project scripts in `tests/live/` are opt-in and, with CAPTCHA now enforced, need a token path (e.g. a temporary CAPTCHA pause). |
+| 5 screens (landing, discover, create, test, dashboard) | Implemented and typechecked; layouts checked at 360, 390, 768 and 1280 px. |
+| Deployed site | <https://peerprobe.vercel.app> (Vercel Production). Security headers are set in `vercel.json`; a Content-Security-Policy is configured in **Report-Only** mode (see [Known limitations](#known-limitations-honest-list)). |
 | AI summary of recurring problems | Not implemented (dashboard says so). |
-| Referrals, public proof cards | Not implemented (post-MVP, by design). |
+| Public proof pages | Not built, by design: the results card is generated in the browser and shared by the founder; there is no public endpoint. |
 
 ## Setup
 
@@ -50,7 +51,7 @@ No SSR, Node server, WebRTC or PeerJS.
    - `supabase/migrations/20261114000200_referrals.sql` *(Phase 2 — referral links; apply only after a reviewed dry-run)*
 4. Copy from *Project Settings → API*: the **Project URL** and the **anon / publishable key**.
    Use **only** the public anon/publishable key. The app refuses to start if it detects a `service_role`/secret key.
-5. *(Strongly recommended)* *Authentication → Attack Protection → CAPTCHA* (e.g. Cloudflare Turnstile) to make mass-creating anonymous identities harder. This needs a small client change (pass the captcha token to `signInAnonymously`) that is **not** implemented yet.
+5. **Human check and sign-in hygiene (done for the live project).** Enable Cloudflare Turnstile and Supabase CAPTCHA in the order described under [Cloudflare Turnstile](#cloudflare-turnstile-human-check-on-first-sign-in). Turn **off** every sign-in provider except anonymous (*Authentication → Sign In / Providers → Email = off*) and set *Authentication → URL Configuration → Site URL* to your deployed address.
 
 ### 2. Run locally
 
@@ -87,6 +88,8 @@ Anonymous identity lives in browser storage, so use **two separate incognito win
 The constants live in the migration; `src/lib/limits.ts` mirrors them for display only.
 
 ### Applying migration 4 (Phase 1)
+
+> Migrations 1–5 are already applied to the production project. This is the procedure that was followed; keep it for fresh projects.
 
 Prerequisite: migrations 1–3 are already applied. Migration 4 **replaces `submit_test`** (it now needs a reservation) and **drops/recreates `list_open_campaigns` and `get_campaign_for_test`** (new return shape), so the old UI cannot submit tests and the new UI cannot work without it. **Apply migration 4 and deploy this UI together.** (Today the deployed site has no Supabase env, so nothing user-facing breaks in between.)
 
@@ -138,8 +141,8 @@ Every identity has a public **invite link** `https://<site>/?ref=<code>` (12-cha
 Anonymous sign-in is the only place identities are created, so it is the place for the check. New visitors pass an (invisible unless needed) Cloudflare Turnstile challenge before their anonymous account is created; returning browsers already have a session and are never challenged.
 
 1. Cloudflare dashboard → Turnstile → add a widget for your deployed hostname (plus `localhost` for development). You get a **site key** (public) and a **secret**.
-2. Put the **site key** in `VITE_TURNSTILE_SITE_KEY` (`.env.local` for dev, the committed `.env.production` for the deploy). It is public by design. For local development Cloudflare publishes an always-pass test key: `1x00000000000000000000AA`.
-3. Deploy the frontend, **then** enable it server-side: Supabase dashboard → Authentication → Attack Protection → *Enable CAPTCHA protection* → Turnstile → paste the **secret** there. The secret never goes into this repo or the browser bundle.
+2. Put the **site key** in `VITE_TURNSTILE_SITE_KEY` (`.env.local` for dev, a Vercel project environment variable for the deploy). It is public by design. For local development Cloudflare publishes an always-pass test key: `1x00000000000000000000AA`.
+3. Deploy the frontend (the widget's allowed hostnames must include the deployed host; Vercel preview URLs are not allowed, so keep the variable Production-only), **then** enable it server-side: Supabase dashboard → Authentication → Attack Protection → *Enable CAPTCHA protection* → Turnstile → paste the **secret** there. The secret never goes into this repo or the browser bundle.
 
 **Troubleshooting (what the visitor and you will see).** The app shows Cloudflare's code in the error message.
 - `600010` (the `600*` family, Cloudflare: "generic challenge failure — bot behavior detected"): Cloudflare itself refused this browser session. It is not a site/hostname/key error (those are 110xxx/400xxx and fail before any click) and not our CSP. The app retries twice with `turnstile.reset()`, then shows the code and a *Try again* button. Typical causes: private windows, VPN/proxy, privacy extensions or hardened browsers, no GPU/WebGL, automated browsers. Cloudflare's own always-fail test key `2x00000000000000000000AB` produces exactly this code, and its always-pass key `1x00000000000000000000AA` signs in through the same code path.
@@ -153,23 +156,20 @@ Anonymous sign-in is the only place identities are created, so it is the place f
 
 | Command | What it proves |
 |---|---|
-| `npm run test:db` | Real Postgres (PGlite) with the **real migration files**: security/atomicity of the MVP core (`run.mjs`), Phase 1 lifecycle with simulated time (`lifecycle.mjs`), and a rehearsal of the production upgrade on a populated database with *exposure disabled + auto-RLS* (`upgrade.mjs`). Mutation-tested: 25 of 26 deliberately broken migrations are caught (the 26th, a lock-skip that prevents a deadlock, is only observable under real concurrency). |
+| `npm run test:db` | Real Postgres (PGlite) with the **real migration files**: security/atomicity of the MVP core (`run.mjs`), Phase 1 lifecycle with simulated time (`lifecycle.mjs`), referrals (`referrals.mjs`, incl. deleting paid invitees/referrers), and a rehearsal of the production upgrade on a populated database with *exposure disabled + auto-RLS* (`upgrade.mjs`). Mutation-tested: every deliberately broken migration is caught except one (the profile `SKIP LOCKED` detail, only observable under real concurrency). |
 | `npm run test:browser` | Builds the app and drives **real Chrome** against a *stubbed* Supabase API (fresh incognito-like contexts): UI wiring, request payloads, timers, error states, mobile layout. Does **not** test the database. |
-| `tests/live/live-e2e.mjs` | The real project: real anonymous auth, PostgREST, RLS, and genuinely parallel requests. Guarded by `PEERPROBE_LIVE_TESTS=1`. |
+| `tests/live/live-e2e.mjs` | The real project: real anonymous auth, PostgREST, RLS, and genuinely parallel requests. Guarded by `PEERPROBE_LIVE_TESTS=1`. With Supabase CAPTCHA enforced it needs a token path (e.g. a temporary, approved CAPTCHA pause). |
 | `tests/live/referral-e2e.mjs` | Same for referrals (needs migration 5): parallel claims, six concurrent settlers racing for one referrer's cap of 3, anonymity, invariants. |
-| `supabase/tests/referrals.mjs` | Referral rules in real Postgres: claim rules, first-test-only, idempotent + capped rewards, privileges, invariants; mutation-tested (17/17 broken migrations caught). |
+| `supabase/tests/referrals.mjs` | Referral rules in real Postgres: claim rules, own-campaign tests never qualify, idempotent + capped rewards (cap survives deleting invitees), no starvation by unpayable rows, privileges, invariants; mutation-tested (26/26 broken migrations caught). |
+| `node tests/browser/csp-check.mjs` | Builds the app, serves it with the Content-Security-Policy taken from `vercel.json` **enforced**, and drives sign-in, Dashboard (results card), Create and Test pages in real Chrome: fails on any violation raised by our own page. Run it before tightening the policy. |
 
 ## Deployment
 
-The existing workflow `.github/workflows/deploy.yml` (do **not** edit it) detects `package.json` → runs `npm ci` + `npm run build` on Node 20 → publishes `dist/` to Cloudflare Pages on every push to `main`, adding `_redirects` (SPA fallback) automatically. This repo is compatible with it (verified with a clean `npm ci` + build under Node 20.20).
+**Canonical:** Vercel — see [Hosting on Vercel](#hosting-on-vercel-public-site). Deployments are made from a checkout with the Vercel CLI; no GitHub integration is required.
 
-**⚠️ The workflow cannot pass environment variables to the build.** Vite inlines `VITE_*` values at build time, so without them the live site shows "Backend not configured". Pick one:
+**HackOnVibe workflow (unchanged, do not edit):** `.github/workflows/deploy.yml` runs on every push to `main` and on manual dispatch. It only deploys to Cloudflare Pages when the organisation secret `CLOUDFLARE_API_TOKEN` is available to this repository; without it the job turns green but **skips the build and deploy steps**. If the organisers enable it, that build has no `VITE_*` variables and would show "Backend not configured" (and the Turnstile widget only allows the Vercel hostname), so the Cloudflare address is **not** the product URL. Point judges and users at the Vercel URL.
 
-- **Recommended:** create a committed `.env.production` containing *only* the two public values (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`). They are public by design — the anon key is protected by RLS. **Never** put the `service_role`/secret key in any committed file.
-- Alternative: set the repo variable `BUILD_CMD` (Settings → Secrets and variables → Actions → Variables) to  
-  `VITE_SUPABASE_URL=https://xxx.supabase.co VITE_SUPABASE_ANON_KEY=xxx npm run build`
-
-**Pushing to `main` deploys to production immediately** (no preview for PRs). Work on branches; merge deliberately.
+**Pushing to `main` does not deploy the Vercel site**; production is updated deliberately with `npx vercel deploy --prod`.
 
 ## Security model (summary — details in [supabase/README.md](supabase/README.md))
 
@@ -179,6 +179,7 @@ The existing workflow `.github/workflows/deploy.yml` (do **not** edit it) detect
 - Self-testing blocked in the RPC **and** by a trigger. One submission per tester per campaign (unique constraint). One-response campaigns: the first valid submission closes it.
 - Testers stay anonymous to founders (`tester_id` is not column-granted). Feedback is private unless the tester ticks the optional sharing box; nothing in the MVP exposes feedback publicly.
 - URLs are validated (public http(s) host only; no localhost/IPs/credentials/`javascript:`), rendered with `rel="noopener noreferrer"`; user text is rendered as text, never HTML.
+- Sign-in is anonymous only (Email, phone and OAuth providers are off). Cloudflare Turnstile + Supabase CAPTCHA gate identity creation: a sign-up without a valid token is refused with HTTP 400. Every function is `SECURITY DEFINER` with an empty `search_path` and is callable only by signed-in users; the anonymous role can run none of them.
 
 ## Known limitations (honest list)
 
@@ -187,7 +188,7 @@ The existing workflow `.github/workflows/deploy.yml` (do **not** edit it) detect
 - **Reservation griefing by many identities.** A reservation hides a task from other testers for up to 15 minutes and blocks the founder's Cancel, and the holder never has to submit. One identity can hold only one task at a time (3 reservations per task), so the effect of a single identity is small, but a script minting many anonymous identities could keep many tasks reserved. Nothing is ever permanently blocked (it all lapses by time), and the only throttle today is Supabase's anonymous-sign-in rate limit; Turnstile is the planned fix.
 - **Settlement is lazy.** There is no scheduler: expired campaigns are refunded when *anyone* loads Discover or Dashboard (up to 25 per call). Until then they are already invisible to testers, but a founder's balance is only restored on the next page load by anyone.
 - **Deleting anonymous identities deletes their feedback** (pre-existing `ON DELETE CASCADE` from `auth.users`). No code does this, but do not purge anonymous users in the Supabase dashboard without exporting feedback first.
-- **No CSP** in `public/_headers` (React escapes all user text and nothing uses `dangerouslySetInnerHTML`, so this is defence in depth). Add one once the Supabase URL is known.
+- **CSP is Report-Only.** `vercel.json` sends `Content-Security-Policy-Report-Only` (self + Cloudflare Turnstile + this Supabase project; no inline scripts; frames denied). Violations show in the browser console; there is no collection endpoint. Enforce it only after the policy has been observed on the real Turnstile widget. Expected, harmless console noise: Cloudflare's own challenge frame reports `data:,` violations of *its* policy.
 - **Hosts are only syntactically validated:** names like `foo.localhost` or `127.0.0.1.nip.io` pass; testers are warned that sites are unvetted, but there is no reporting/blocklist. The URL is only ever opened in the tester's own browser (no server-side fetch).
 - **Two tabs opened simultaneously on a first visit** can each create an anonymous identity (one unused credit is orphaned).
 - **Slow failure when a returning user is offline:** supabase-js retries the token refresh for ~50 s before the retryable error appears. The identity is preserved (verified), only the wait is poor.
@@ -203,8 +204,10 @@ src/                    React app (pages/, components/, lib/, context/)
 supabase/migrations/    Schema, RLS, RPC functions (apply in filename order)
 supabase/tests/         PGlite-based SQL test-suites (isolated package; not part of the app build)
 tests/browser/          Real-Chrome tests of the built app against a stubbed API (isolated package)
-tests/live/             Real-project end-to-end test (guarded; needs migration 4 applied)
-public/_headers         Security headers + no-store (mirrors what the CI would add)
+tests/live/             Real-project end-to-end scripts (guarded by PEERPROBE_LIVE_TESTS=1; they write test data)
+public/_headers         Cloudflare-style headers (inert on Vercel; kept for the HackOnVibe path)
+vercel.json             Vercel build, SPA rewrite, security headers, CSP (Report-Only)
+.vercelignore           Files the Vercel CLI never uploads
 .env.example            Public Supabase settings template
 .github/workflows/      Managed centrally by HackOnVibe — do not edit
 ```

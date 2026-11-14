@@ -3,17 +3,19 @@
 Peer-to-peer human usability-testing credit exchange (HackOnVibe MVP). Read `.claude-memory/` first; it holds decisions and current state. `README.md` has setup.
 
 ## Commands
-- `npm run dev` / `npm run typecheck` / `npm run build` (CI runs the build on **Node 20**)
+- `npm run dev` / `npm run typecheck` / `npm run build` (the HackOnVibe workflow would build on **Node 20**; Vercel project uses Node 24.x; both must stay clean)
 - `npm run test:db` — real-Postgres (PGlite) tests of the Supabase migrations (core + lifecycle + upgrade rehearsal)
 - Phase 2 (referrals + Turnstile) code lives in `src/lib/{referral,turnstile}.ts`, `src/components/Share.tsx`; migration `20261114000200_referrals.sql` is APPLIED to production (2026-11-14) - do not edit it, change the schema only with a new migration; **never enable Supabase CAPTCHA before the Turnstile-aware frontend is deployed**.
 - `npm run test:browser` — real Chrome vs a **stubbed** API (builds the app twice into a temp dir)
-- `PEERPROBE_LIVE_TESTS=1 node tests/live/live-e2e.mjs` — writes to the REAL Supabase project in `.env.local`; only after migration 4 is applied and with the user's OK
+- `PEERPROBE_LIVE_TESTS=1 node tests/live/live-e2e.mjs` — writes to the REAL Supabase project in `.env.local` and only with the user's OK. Supabase CAPTCHA is now enforced, so new anonymous identities need a Turnstile token: these scripts cannot run unattended any more.
+- `node tests/browser/csp-check.mjs` — enforces the CSP from `vercel.json` in real Chrome (stub API).
+- Hosting = Vercel (team `peer-probe`, project `peerprobe`, https://peerprobe.vercel.app). `vercel.json` holds build/rewrite/headers/CSP-Report-Only. Deploys are CLI-only and need the user's approval; **a Vercel project's FIRST deployment becomes Production automatically**.
 
 ## Hard rules (from the user)
 - **No login wall, ever.** All core features work via Supabase Anonymous Auth, created silently.
 - Frontend only is static (Vite → `dist/index.html`). No SSR/Next/Express/WebRTC/PeerJS.
 - **Do not edit** `.github/workflows/deploy.yml` or `.wrangler/cache/*`.
-- **Never push or deploy without the user's explicit approval** (push to `main` = production deploy).
+- **Never push, merge, deploy, change Supabase/Vercel/Cloudflare settings or enable/disable CAPTCHA without the user's explicit approval.** (Push to `main` does not deploy the Vercel site, but it runs the HackOnVibe workflow.)
 - Never put a `service_role`/secret key in the browser, `.env*` committed files, or docs. Only the public anon/publishable key.
 - No fake testers, feedback, results, or usage metrics — empty states must be honest.
 - All DB writes go through `SECURITY DEFINER` RPCs; clients are read-only via RLS. Keep it that way.
@@ -21,7 +23,9 @@ Peer-to-peer human usability-testing credit exchange (HackOnVibe MVP). Read `.cl
 - **Migrations 1–3 are applied in production: never edit them.** Change the schema only with new migration files, rehearse with `supabase db push --dry-run --remote`; applying anything to the live DB needs explicit user approval.
 
 ## Gotchas
-- Vite inlines `VITE_*` at build time and the CI workflow cannot pass env vars → committed `.env.production` (public values only) or repo var `BUILD_CMD`.
+- Vite inlines `VITE_*` at build time. On Vercel they are project env vars (Config type): `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` (Production + Preview) and `VITE_TURNSTILE_SITE_KEY` (Production only: the widget is bound to peerprobe.vercel.app). The HackOnVibe workflow cannot pass env vars and has no token for this repo.
+- Vercel CLI on Windows Git Bash: prefix with `MSYS_NO_PATHCONV=1` for paths like `/discover`; `vercel link` writes `VERCEL_OIDC_TOKEN` into `.env.local` (remove it); `vercel env rm` needs `--confirm-name`.
+- Cloudflare Turnstile code 600010 = Cloudflare refused the browser session (generic challenge failure), not a config error; see README → Turnstile troubleshooting.
 - Keep `@supabase/supabase-js` on the `~2.105` line: 2.110+ declare `node >=22`, CI uses Node 20.
 - `test_submissions.tester_id` is column-revoked; always list columns explicitly (no `select *`).
 - Don't write `useEffect(() => someFn(), …)`: an expression-bodied effect returns the call's result, and a non-function return crashes React on unmount (this bit us with `window.scrollTo`).

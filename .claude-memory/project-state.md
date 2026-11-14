@@ -1,6 +1,6 @@
 ﻿# PeerProbe — project state
 
-_Last updated: 2026-11-14 (branch `feat/peerprobe-mvp`, not pushed). Stable checkpoint commit: `120b943` (tested MVP). Phase 1 work below is UNCOMMITTED._
+_Last updated: 2026-11-14 (branch `feat/peerprobe-mvp`; migrations 1-5 applied; Vercel Production live behind Vercel Authentication; Supabase CAPTCHA enforced). See the dated sections below; older sections are history._
 
 ## What exists
 - Vite + React 19 + TS + Tailwind 4 SPA, 5 screens: Landing, Discover, CreateTask, TestTask, Dashboard.
@@ -19,23 +19,23 @@ New migration `supabase/migrations/20261114000100_lifecycle_antiabuse.sql` (+ UI
 Migration `20261114000200_referrals.sql` (ref_code, referrals, referral_reward ledger reason, claim_referral / settle_referral_rewards / get_my_referrals), `src/lib/{referral,turnstile}.ts`, `src/components/Share.tsx` (invite card, results card, referral stats), Landing "invited" note. Independent security review done; its HIGH (settlement starvation) + 3 MEDIUM findings fixed in the still-unapplied migration 5 (see ADR-009 amendments). Tests: referrals.mjs 91 (incl. deletion/referential-integrity scenarios), run 119, lifecycle 118, upgrade 31 (incl. migration-5 stage), browser 58+77+52, live scripts tests/live/referral-e2e.mjs (44/44) and live-e2e.mjs (57/57) also pass on the real project. Mutation: 26/26 referral mutants killed (the pair advisory lock and the SKIP LOCKED paths are only observable under real concurrency). DONE with user approval: fresh dry-run (only migration 5; file hash 12b3b379...a77 = reviewed commit 16e8b05) -> applied with `db push --yes` -> tests/live/referral-e2e.mjs 44/44 and live-e2e.mjs 57/57 on the REAL project (true parallel claims, 6 racing settlers -> exactly 3 rewards; deleted-invitee cases are covered by the PGlite suite only because the publishable key cannot delete auth users and no data may be deleted). STILL NEEDS user: Turnstile keys (site key public; secret only in Supabase dashboard; enable CAPTCHA AFTER frontend deploy); .env.production commit; push; merge/deploy.
 
 ## Not done / blocked
-- Deploy env injection: CI can't pass env; needs committed `.env.production` (public values) or `BUILD_CMD` repo var (needs user approval to commit/push; push to `main` = production deploy).
-- Phase 2 (approved direction, ADR-007): Cloudflare Turnstile on anonymous sign-in (user creates keys; secret only in the Supabase dashboard), referral links, shareable consent-gated proof card (needs an anon-callable RPC → ask first).
+- Public launch: Vercel Authentication is still "All Deployments" (site not public). Switching to Standard Protection needs the user's approval (empirically makes peerprobe.vercel.app public while deployment-hash/preview URLs stay protected).
+- Merge into main (plan in "Release prep" below) - needs the user's approval; the product name is not final yet, so branding changes (OG tags/image) are prepared but NOT committed.
 - AI summary (Edge Function) — post-MVP.
 - Live DB contains E2E test rows (≈10 anonymous identities, closed campaigns, test feedback); no open campaigns.
 
 ## Known risks
 - Anonymous identity ≠ anti-Sybil: unlimited starter credits via new incognito identities; many identities can also grief reservations. Mitigation planned: Turnstile. Documented in README/UI.
 - Feedback quality is only length-validated; no founder dispute/clawback.
-- CSP not set; `.wrangler/cache` tracked with an account email (user forbade touching it); multi-tab first visit can create two identities.
+- CSP is Report-Only only (vercel.json, not yet deployed); `.wrangler/cache` tracked with an account email (user forbade touching it); multi-tab first visit can create two identities.
 
 ## PRE-LAUNCH SECURITY CHECKLIST (must be resolved or explicitly accepted before real users)
 - [ ] Anonymous-user deletion cascade: `test_submissions`, `credit_ledger`, `profiles`, `projects`, `campaigns` all cascade from `auth.users` (ON DELETE CASCADE, migration 1). Purging/deleting anonymous users in the Supabase dashboard (or any auth cleanup job) silently DELETES their feedback and ledger history, which also breaks "never delete feedback" and credit conservation. Before launch: document "never purge anonymous users", and/or add a migration that preserves feedback (e.g. anonymise tester_id / ON DELETE SET NULL / retention table). Export feedback before any purge.
-- [ ] Cloudflare Turnstile on anonymous sign-in (Sybil starter credits + reservation griefing).
-- [ ] CSP header in public/_headers once the Supabase URL is final.
+- [x] Cloudflare Turnstile on anonymous sign-in: DONE and enforced server-side (token-less / garbage / dummy tokens rejected with HTTP 400 captcha_failed, verified 2026-11-14). Open: real-visitor pass rate (a desktop Incognito session got Cloudflare 600010; a phone passed) - watch Cloudflare Turnstile Analytics.
+- [ ] CSP: Report-Only header is in vercel.json (policy verified against the real Turnstile script + dummy key in real Chrome, 0 violations from our page). Deploy it, observe with the real widget, then switch to enforcing.
 - [ ] `.wrangler/cache` is tracked and contains an account email (user forbade editing it).
 - [ ] Multi-tab first visit can create two anonymous identities (orphan identity, no credit).
-- [ ] Apply migration 4 together with the matching UI; run tests/live/live-e2e.mjs on the real project; manual expiry check (README).
+- [x] Migration 4 applied with the matching UI; live-e2e 57/57; expiry check 19/19 (2026-11-14).
 
 
 
@@ -46,3 +46,12 @@ Migration `20261114000200_referrals.sql` (ref_code, referrals, referral_reward l
 
 ## Vercel hosting (2026-11-14)
 Team `peer-probe` (PeerProbe, Pro), project `peerprobe`, deployed with the Vercel CLI from commit fe1373b (no GitHub integration). Production alias https://peerprobe.vercel.app, Node 24.x, Vercel Authentication = ALL deployments (public access answers 302 to Vercel login; to make the site public later, set Deployment Protection back to "Standard"/off - needs user approval). The FIRST deployment of a Vercel project is auto-assigned to Production (this happened on 2026-11-13/14 against the user's intent; protection was tightened immediately). Env vars (Config type, public): VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY (Production+Preview), VITE_TURNSTILE_SITE_KEY (Production ONLY: the Turnstile widget is bound to peerprobe.vercel.app, previews would fail). Supabase CAPTCHA is still OFF; user will paste the Turnstile secret in the Supabase dashboard. Real Turnstile (Managed) renders a visible "Verify you are human" checkbox on first visit; automated Chrome cannot pass it ("The human check failed"), so the token path must be confirmed by a human click. TURNSTILE 600010 INVESTIGATION (2026-11-14): user hit 600010 in a fresh Incognito window on the real hostname. Evidence: widget rendered the checkbox (so sitekey + hostname are accepted; a mismatch is 110200/400xxx before any click); we send NO CSP (the `data:,` violations originate in the challenge frame on challenges.cloudflare.com, with Cloudflare's own policy); real Chrome + real Cloudflare script + Cloudflare's always-pass dummy key `1x00000000000000000000AA` through our code signs in (token attached, signup 200); Cloudflare's always-fail dummy key `2x00000000000000000000AB` yields exactly code 600010. Cause = Cloudflare's challenge verdict for that browser session (docs: 600* = generic challenge failure / bot behavior), not our config. Code now: error code surfaced, 2 automatic reset() retries, config codes (110100/110110/110200/200100/400*) fail fast, visible hint while waiting (tested 62 browser checks). DEPLOYED to Production 2026-11-14 from c8199d0 (deployment peerprobe-o9w0tbsqm-peer-probe); bundle verified: real site key, no dummy keys, no secrets; Vercel Authentication ALL; Supabase CAPTCHA still OFF. Vercel CLI gotchas: `vercel link` writes VERCEL_OIDC_TOKEN into .env.local (remove it); `vercel env rm` needs --confirm-name; `vercel curl` needs MSYS_NO_PATHCONV=1 in Git Bash; VITE_* names need `--type config`.
+
+
+## Settings verified 2026-11-14 (read-only; changed by the user in the Supabase dashboard)
+- Auth providers: only anonymous is enabled (/auth/v1/settings: external.email=false, phone=false; config: auth.email.enable_signup=false). Site URL = https://peerprobe.vercel.app (was http://localhost:3000). CAPTCHA enabled, provider turnstile. Anonymous sign-ins on.
+
+## Release prep (2026-11-14)
+- Prepared in the working tree: CSP Report-Only header (vercel.json), tests/browser/csp-check.mjs, README/CLAUDE.md/memory refresh (live URL, Vercel hosting, current test counts). Prepared but deliberately NOT committed until the final product name is confirmed: Open Graph/Twitter tags + canonical (index.html), public/og-image.png, scripts/make-og-image.mjs (NAME constant). Absolute URLs there use https://peerprobe.vercel.app.
+- Merge plan: push local docs commit; switch Vercel protection to Standard and verify; PR feat/peerprobe-mvp -> main (fast-forwardable, 0 behind, clean merge-tree); merge with a MERGE COMMIT (not squash/rebase) to preserve all commits and SHAs; after merge check that the HackOnVibe workflow run is green-but-skipped and that main has no .env files; rollback = revert the merge commit (git revert -m 1), never force-push.
+- Vercel Pro trial ends 2026-11-28 18:39 UTC.
