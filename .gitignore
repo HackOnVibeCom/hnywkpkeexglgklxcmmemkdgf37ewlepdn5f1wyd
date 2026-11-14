@@ -23,3 +23,6 @@ Thumbs.db
 # Supabase local dev state (if you use the Supabase CLI)
 supabase/.branches/
 supabase/.temp/
+
+# Vercel CLI link + pulled env (project/org ids, pulled variables)
+.vercel

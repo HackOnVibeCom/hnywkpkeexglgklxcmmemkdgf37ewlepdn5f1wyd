@@ -101,6 +101,22 @@ Prerequisite: migrations 1–3 are already applied. Migration 4 **replaces `subm
 `update public.campaigns set created_at = now() - interval '8 days', expires_at = now() - interval '1 day' where id = '<campaign id>';`
 and reload the Dashboard of that founder: the campaign must show *Expired — credit refunded* and the balance must be +1 exactly once.
 
+## Hosting on Vercel (public site)
+
+The site is a static Vite build, so Vercel needs no server code. `vercel.json` sets the build (`npm ci` → `npm run build` → `dist`), a single-page-app rewrite (every non-asset path serves `index.html`, so `/discover`, `/create`, `/test/:id`, `/dashboard` and unknown URLs work on a hard refresh) and basic security headers. Hashed files in `/assets` are cached immutably; a missing asset is a real 404. `public/_headers` is a Cloudflare file and is ignored by Vercel.
+
+**Environment variables** live in the Vercel project (Settings → Environment Variables), never in the repo. All three are public by design and are inlined at build time, so changing one needs a **redeploy**:
+
+| Name | Value | Required |
+|---|---|---|
+| `VITE_SUPABASE_URL` | `https://<project-ref>.supabase.co` | yes |
+| `VITE_SUPABASE_ANON_KEY` | the publishable (anon) key — never a secret/service_role key; the build fails if one is found | yes |
+| `VITE_TURNSTILE_SITE_KEY` | Cloudflare Turnstile **site** key | later; leave unset until the widget exists |
+
+**Deploy from this checkout (no GitHub integration needed):** `npx vercel login`, `npx vercel link`, add the variables above, `npx vercel deploy` (preview), then `npx vercel deploy --prod`. `.vercel/` (project ids, pulled env) is git-ignored and `.vercelignore` keeps `.env*`, `supabase/`, `tests/` and notes out of the upload. Node: any of 20–24 works (tested on 20 and 24); pick 24.x in Project Settings.
+
+**Order for Turnstile:** deploy without the site key (CAPTCHA off in Supabase) and test → create the Turnstile widget for the final hostname → add `VITE_TURNSTILE_SITE_KEY` → redeploy and test → only then enable CAPTCHA in Supabase.
+
 ## Growth: referral links and sharing
 
 Every identity has a public **invite link** `https://<site>/?ref=<code>` (12-char random code). It is shown right after a founder requests a test and right after they earn a credit, and on the Dashboard.

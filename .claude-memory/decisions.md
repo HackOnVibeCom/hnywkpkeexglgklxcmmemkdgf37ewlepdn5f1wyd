@@ -39,6 +39,12 @@ Decision: expiry and reservation lapse are evaluated lazily with time comparison
 Rejected: pg_cron (not guaranteed on every plan, extra moving part); client-side expiry (untrusted); reward-then-clawback for junk feedback (negative-balance complexity) - deferred.
 Consequence: refunds happen when anyone loads Discover/Dashboard; reservation griefing by many identities is possible until Turnstile; migration 4 replaces submit_test, so UI and migration must be deployed together.
 
+## ADR-010 - Host the public site on Vercel (decided 2026-11-14)
+Decision: Vercel serves the static Vite build; Supabase stays the backend; the HackOnVibe GitHub repo keeps the history. Deploys use the Vercel CLI from the working tree (no GitHub integration with the private org). `vercel.json` = build + SPA rewrite + security headers; VITE_* values are Vercel project env vars, not committed files.
+Reason: the organisers' Cloudflare pipeline silently skips every deploy step in this repo (org secret CLOUDFLARE_API_TOKEN not available), so there is no verifiable live URL from it.
+Rejected: waiting on the organisers' token; committing a .env.production.
+Consequence: public/_headers (Cloudflare) is inert on Vercel; env changes need a redeploy; the Turnstile hostname is the Vercel production hostname; Vercel preview URLs are behind Vercel auth by default, the production URL is public.
+
 ## ADR-009 - Phase 2 growth: referral reward paid by lazy settlement; results card is client-side only
 Decision: a referrer earns +1 credit (cap 3) when an invitee finishes their FIRST rewarded test after claiming. Payment is a separate idempotent settle_referral_rewards() (SKIP LOCKED, never waits) run on Discover/Dashboard loads - NOT inside submit_test - so no new lock order enters the money path. Idempotency: referrals PK(referee) + unique ledger index (referee_id). Invitee ids are hidden from clients (credit_ledger column grants). The shareable "results/proof card" is computed in the browser from the founder's own data (aggregates + consented quotes only); NO anon-callable public endpoint was added. Turnstile is opt-in by build env (VITE_TURNSTILE_SITE_KEY); the secret lives only in the Supabase dashboard; CAPTCHA must be enabled server-side only AFTER the Turnstile-aware frontend is deployed.
 Rejected: public proof pages (needs anon RPC, loosens "anon gets nothing"); paying the referrer at signup (trivially farmable); paying inside submit_test (new lock inversion).
