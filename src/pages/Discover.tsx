@@ -6,6 +6,7 @@ import { useAuth } from '../context/AuthContext';
 import { Alert, Button, ButtonLink, EmptyState, PageHeader, Spinner } from '../components/ui';
 import { CategoryBadges } from '../components/CategoryPicker';
 import { ModeBadge } from '../components/Eligibility';
+import { AiRecommendations, BrowseAllHeading } from '../components/ai/AiRecommendations';
 import { categoryLabel, shortReason } from '../lib/matching';
 import { DAILY_REWARD_CAP, RESERVATION_MINUTES } from '../lib/limits';
 import type { MatchedCampaign, MyStatus, TesterProfile } from '../lib/types';
@@ -139,6 +140,11 @@ export function Discover() {
           have already tested, expired tasks and ones someone else is testing right now are never shown.
         </EmptyState>
       )}
+
+      {/* AI-personalised block: additive and optional. Eligibility is decided server-side; the list below is unchanged. */}
+      {data && <AiRecommendations campaigns={data.campaigns} atCap={atCap} />}
+
+      {data && data.campaigns.length > 0 && <BrowseAllHeading note={data.modes && notEligibleCount > 0} />}
 
       {data && data.campaigns.length > 0 && (
         <ul className="grid gap-4 sm:grid-cols-2">

@@ -14,7 +14,7 @@
     "preview": "vite preview",
     "test:db": "npm --prefix supabase/tests install && npm --prefix supabase/tests test",
     "test:browser": "npm --prefix tests/browser install && npm --prefix tests/browser test",
-    "test:unit": "node tests/unit/matching.test.mjs"
+    "test:unit": "node tests/unit/matching.test.mjs && node tests/unit/ai-engine.test.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "~2.105.0",
