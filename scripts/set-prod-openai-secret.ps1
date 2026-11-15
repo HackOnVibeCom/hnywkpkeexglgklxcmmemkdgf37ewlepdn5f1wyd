@@ -23,7 +23,7 @@ try {
   $key = $null
   & icacls.exe $tmp /inheritance:r | Out-Null
   & icacls.exe $tmp /grant:r "$([Security.Principal.WindowsIdentity]::GetCurrent().Name):(R,W)" | Out-Null
-  & npx.cmd supabase secrets set --env-file $tmp --project-ref $ProjectRef
+  & npx.cmd supabase secrets set --env-file $tmp --remote=$ProjectRef
   if ($LASTEXITCODE -ne 0) { Write-Host 'supabase secrets set failed (are you logged in? `npx supabase login`).' -ForegroundColor Red; exit 3 }
   Write-Host 'OPENAI_API_KEY was set as an Edge Function secret (value not shown). The AI features are still OFF until the enable flags are set.' -ForegroundColor Green
 } finally {
