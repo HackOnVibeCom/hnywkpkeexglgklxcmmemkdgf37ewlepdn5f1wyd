@@ -1,4 +1,5 @@
--- READ-ONLY verification of migration 7 (Matching v2). Pure SELECT: it changes nothing.
+-- READ-ONLY verification of migration 7 (Matching v2). ONE pure SELECT statement: it changes nothing (it only reads the
+-- system catalogs, has_*_privilege() and a few row counts; no DML, no DDL, no function that writes).
 -- Paste into the Supabase SQL Editor AFTER the migration was applied. Every row of the "ok" column must be true;
 -- the "info" rows only show current numbers.
 select check_name, ok, detail from (
@@ -10,7 +11,8 @@ select check_name, ok, detail from (
            and not (has_table_privilege('anon', 'public.' || t, 'select,insert,update,delete,truncate,references,trigger')
                  or has_table_privilege('authenticated', 'public.' || t, 'select,insert,update,delete,truncate,references,trigger'))
            and (select count(*) = 0 from information_schema.column_privileges
-                 where table_schema = 'public' and table_name = t and grantee in ('anon', 'authenticated', 'PUBLIC')), ''
+                 where table_schema = 'public' and table_name = t and grantee in ('anon', 'authenticated', 'PUBLIC'))
+           and (select count(*) = 0 from pg_attribute where attrelid = ('public.' || t)::regclass and attnum > 0 and attacl is not null), ''
     from unnest(array['screening_versions', 'screening_questions', 'screening_attempts']) as t
   union all select 10 + row_number() over (order by f), 'RPC ' || f || ': authenticated YES, anon NO, PUBLIC NO, SECURITY DEFINER + search_path',
          has_function_privilege('authenticated', f::regprocedure, 'execute')
@@ -45,10 +47,13 @@ select check_name, ok, detail from (
   union all select 32, 'clients cannot write campaigns.testing_mode / read it as anon',
          not (has_column_privilege('authenticated', 'public.campaigns', 'testing_mode', 'insert,update,references')
            or has_column_privilege('anon', 'public.campaigns', 'testing_mode', 'select,insert,update')), ''
-  union all select 33, 'EVERY existing campaign is OPEN testing (none silently restricted)',
-         (select count(*) = 0 from public.campaigns where testing_mode <> 'open'), (select count(*) || ' campaigns checked' from public.campaigns)
+  union all select 33, 'EVERY campaign that existed BEFORE the migration is OPEN testing (none silently restricted)',
+         (select count(*) = 0 from public.campaigns where testing_mode <> 'open' and created_at < (select min(created_at) from public.screening_versions)),
+         (select count(*) || ' pre-migration campaigns checked; ' || (select count(*) from public.campaigns where testing_mode = 'targeted') || ' targeted campaign(s) exist now (created through the new UI)'
+            from public.campaigns where created_at < (select min(created_at) from public.screening_versions))
   union all select 34, 'campaigns created with Matching-v1 preferred categories are still OPEN',
-         (select count(*) = 0 from public.campaigns where target_categories <> '{}' and testing_mode <> 'open'), (select count(*) || ' campaigns have preferred categories' from public.campaigns where target_categories <> '{}')
+         (select count(*) = 0 from public.campaigns where target_categories <> '{}' and testing_mode <> 'open' and created_at < (select min(created_at) from public.screening_versions)),
+         (select count(*) || ' pre-migration campaigns have preferred categories' from public.campaigns where target_categories <> '{}' and created_at < (select min(created_at) from public.screening_versions))
   union all select 40, 'screening content seeded: 3 categories x 1 version x 4 questions',
          (select count(*) = 3 from public.screening_versions) and (select count(*) = 12 from public.screening_questions)
          and (select count(distinct category) = 3 and min(c) = 4 and max(c) = 4 from (select category, count(*) c from public.screening_questions group by category) x), ''
