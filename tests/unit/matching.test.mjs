@@ -65,5 +65,25 @@ ok(suggestCategories('Retired teacher').length === 0, '"retired" alone suggests 
 ok(Array.isArray(suggestCategories('x').map((s) => s.matched)), 'suggestions expose only category + the words found (no scores about people)');
 ok(CATEGORIES.every((c) => c.keywords.length >= 8 && new Set(c.keywords).size === c.keywords.length), 'keyword lists are non-trivial and duplicate-free');
 
+console.log('\n[Matching v2 helpers: screening categories and explanations]');
+{
+  const { SCREENING_CATEGORY_IDS, requiresScreening, SCREENED_LABEL, explainIneligible, shortReason } = await import('../../src/lib/matching.ts');
+  ok(JSON.stringify(SCREENING_CATEGORY_IDS) === '["tech_savvy","founders_builders","business_office"]', 'exactly the three professional categories require screening');
+  ok(['students_learners', 'everyday_nontechnical'].every((c) => !requiresScreening(c)) && SCREENING_CATEGORY_IDS.every(requiresScreening), 'the two general categories never require screening');
+  ok(!requiresScreening('wizards') && !requiresScreening('') && !requiresScreening('__proto__'), 'unknown ids are not "professional"');
+  ok(SCREENED_LABEL === 'Screened — self-reported experience' && !/verified|certified|credential/i.test(SCREENED_LABEL), 'the screening badge says self-reported and never "verified"');
+  const np = explainIneligible('no_profile', ['tech_savvy', 'students_learners']);
+  ok(np.action === 'profile' && /Tech-Savvy Users, Students & Learners/.test(np.body) && /no tester profile/.test(np.body), 'no_profile: asks for a profile and lists the required categories');
+  const mm = explainIneligible('category_mismatch', ['business_office']);
+  ok(mm.action === 'profile' && /Business & Office Users/.test(mm.body) && /does not include/.test(mm.body), 'category_mismatch: says the profile lacks the categories');
+  const sr = explainIneligible('screening_required', ['tech_savvy', 'students_learners'], ['tech_savvy']);
+  ok(sr.action === 'screening' && sr.screeningCategory === 'tech_savvy' && /self-reported/.test(sr.body) && /not a verified credential/.test(sr.body), 'screening_required: points at the screening to take and says it is self-reported, not a verified credential');
+  ok(explainIneligible('screening_required', ['founders_builders', 'business_office'], ['founders_builders', 'business_office']).screeningCategory === 'founders_builders', 'with several missing screenings the first one is offered');
+  ok(explainIneligible('weird', []).action === null && explainIneligible(null, []).action === null, 'an unknown reason gives a safe generic message');
+  ok(['no_profile', 'category_mismatch', 'screening_required', null].every((r) => typeof shortReason(r) === 'string' && shortReason(r).length > 3), 'short reasons exist for every code');
+  const all = [np, mm, sr].map((e) => e.title + ' ' + e.body).join(' ');
+  ok(!/\b(AI|artificial|machine learning)\b/i.test(all), 'no AI claims in any explanation');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

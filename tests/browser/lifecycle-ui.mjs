@@ -152,7 +152,7 @@ console.log('\n[L5] Discover');
   await page.goto(ENV + '/discover');
   await page.getByText('Acme Invoicing').waitFor();
   const order = be.s.calls.map((c) => c.p.split('/').pop());
-  ok(order.indexOf('settle_expired_campaigns') !== -1 && order.indexOf('settle_expired_campaigns') < order.indexOf('list_matched_campaigns'), 'expired campaigns are settled BEFORE the feed is read');
+  ok(order.indexOf('settle_expired_campaigns') !== -1 && order.indexOf('settle_expired_campaigns') < order.indexOf('list_campaigns_v2'), 'expired campaigns are settled BEFORE the feed is read');
   ok(await waitUntil(() => be.s.calls.some((c, i) => c.p === '/rest/v1/profiles' && i > order.indexOf('settle_expired_campaigns')), 3000), 'balance re-read after a settlement refunded something');
   ok(await page.getByText(/Rewarded tests in the last 24 h/).isVisible() && (await page.locator('strong', { hasText: /^2$/ }).count()) >= 1, 'quota line shows 2 of 5');
   ok(await page.getByText(/days left/).first().isVisible(), 'cards show how long the task stays open');

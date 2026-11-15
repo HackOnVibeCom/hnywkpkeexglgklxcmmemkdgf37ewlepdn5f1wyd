@@ -77,7 +77,32 @@ export function createBackend(opts = {}) {
     tester: opts.tester ?? null,
     /** campaigns created through the UI: { rpc, body } */
     created: [],
+    /** Matching v2 (Open vs Targeted testing + screening). false = the backend predates migration 7. */
+    v2: opts.v2 ?? opts.matching ?? true,
+    /** professional categories the tester has completed the screening for */
+    screened: new Set(opts.screened ?? []),
+    /** screening attempts used in the last 24 h, per category */
+    attempts: { tech_savvy: 0, founders_builders: 0, business_office: 0, ...(opts.attempts ?? {}) },
+    screeningSubmits: [],
   };
+  const PRO = ['tech_savvy', 'founders_builders', 'business_office'];
+  const ALLCATS = ['tech_savvy', 'founders_builders', 'business_office', 'students_learners', 'everyday_nontechnical'];
+  /** Mirrors the SQL rule (tester_eligibility). */
+  function eligibilityOf(mode, required) {
+    const cats = s.tester?.categories ?? [];
+    const overlap = required.filter((x) => cats.includes(x));
+    if (mode !== 'targeted') return { eligible: true, reason: 'open', missing: [], overlap };
+    if (cats.length === 0) return { eligible: false, reason: 'no_profile', missing: [], overlap: [] };
+    if (overlap.length === 0) return { eligible: false, reason: 'category_mismatch', missing: [], overlap };
+    if (overlap.some((c) => !PRO.includes(c) || s.screened.has(c))) return { eligible: true, reason: 'eligible', missing: [], overlap };
+    return { eligible: false, reason: 'screening_required', missing: overlap.filter((c) => PRO.includes(c) && !s.screened.has(c)), overlap };
+  }
+  const rowEligibility = (r) => eligibilityOf(r.testing_mode ?? 'open', r.target_categories ?? []);
+  const QS = (cat) => ['q1', 'q2', 'q3', 'q4'].map((id, i) => ({
+    id,
+    prompt: `Question ${i + 1} for ${cat}: which of these have you done?`,
+    options: [{ id: 'a', label: `Activity A of question ${i + 1}` }, { id: 'b', label: `Activity B of question ${i + 1}` }, { id: 'c', label: `Activity C of question ${i + 1}` }, { id: 'none', label: 'None of these' }],
+  }));
   const now = () => Date.now() + s.skewMs;
   const called = (name) => s.calls.filter((c) => c.p.endsWith('/rpc/' + name));
 
@@ -143,6 +168,73 @@ export function createBackend(opts = {}) {
         rows.sort((a, b) => Number(b.reserved_by_me) - Number(a.reserved_by_me) || Number(b.is_recommended) - Number(a.is_recommended) || b.match_categories.length - a.match_categories.length || Date.parse(a.created_at) - Date.parse(b.created_at) || (a.campaign_id < b.campaign_id ? -1 : 1));
         return send(rows);
       }
+      // ---------------- Matching v2 ----------------
+      const V2 = ['list_campaigns_v2', 'get_campaign_eligibility', 'get_screening', 'submit_screening', 'get_my_screening_status', 'create_campaign_v2'];
+      if (rpcName && V2.includes(rpcName) && !s.v2) return MISSING(rpcName);
+      if (rpcName === 'list_campaigns_v2') {
+        const rows = s.feed.map((r) => {
+          const e = rowEligibility(r);
+          const live = !!r.reserved_by_me;
+          const ok2 = e.eligible || live;
+          return {
+            ...r,
+            testing_mode: r.testing_mode ?? 'open',
+            target_categories: r.target_categories ?? [],
+            match_categories: e.overlap,
+            fit: !ok2 ? 'not_eligible' : e.overlap.length > 0 ? 'recommended' : 'eligible',
+            eligible: ok2,
+            ineligible_reason: ok2 ? null : e.reason,
+            missing_screening: ok2 ? [] : e.missing,
+          };
+        });
+        const rank = (r) => (r.fit === 'not_eligible' ? 2 : r.fit === 'recommended' ? 0 : 1);
+        rows.sort((a, b) => Number(b.reserved_by_me) - Number(a.reserved_by_me) || rank(a) - rank(b) || b.match_categories.length - a.match_categories.length || Date.parse(a.created_at) - Date.parse(b.created_at) || (a.campaign_id < b.campaign_id ? -1 : 1));
+        return send(rows);
+      }
+      if (rpcName === 'get_campaign_eligibility') {
+        const id = body?.p_campaign_id;
+        const row = s.feed.find((r) => r.campaign_id === id);
+        const mode = row?.testing_mode ?? s.pages[id]?.mode ?? 'open';
+        const required = row?.target_categories ?? s.pages[id]?.required ?? [];
+        const e = eligibilityOf(mode, required);
+        const hold = liveRes(id);
+        return send({
+          campaign_id: id, testing_mode: mode, required_categories: required,
+          eligible: !!hold || e.eligible, reason: hold ? 'in_progress' : e.reason,
+          missing_screening: hold ? [] : e.missing, overlap: e.overlap, own_campaign: false,
+        });
+      }
+      if (rpcName === 'get_screening') {
+        const cat = body?.p_category;
+        if (!PRO.includes(cat)) return fail('screening_not_required');
+        return send({ category: cat, version: 1, min_areas: 2, qualified: s.screened.has(cat), max_attempts: 3, attempts_left: Math.max(3 - s.attempts[cat], 0), questions: QS(cat) });
+      }
+      if (rpcName === 'submit_screening') {
+        const cat = body?.p_category;
+        if (!PRO.includes(cat)) return fail('screening_not_required');
+        s.screeningSubmits.push({ cat, answers: body?.p_answers });
+        if (s.screened.has(cat)) return fail('already_screened');
+        if (s.attempts[cat] >= 3) return fail('screening_rate_limited', new Date(Date.now() + 3600e3).toISOString());
+        const a = body?.p_answers ?? {};
+        const qs = QS(cat);
+        if (qs.some((q) => !Array.isArray(a[q.id]) || a[q.id].length === 0)) return fail('invalid_answers');
+        const areas = qs.filter((q) => !(a[q.id].length === 1 && a[q.id][0] === 'none')).length;
+        s.attempts[cat] += 1;
+        const passed = areas >= 2;
+        if (passed) s.screened.add(cat);
+        return send({ passed, areas, min_areas: 2, version: 1, attempts_left: Math.max(3 - s.attempts[cat], 0) });
+      }
+      if (rpcName === 'get_my_screening_status') {
+        return send(PRO.map((c) => ({ category: c, version: 1, qualified: s.screened.has(c), qualified_at: s.screened.has(c) ? iso(Date.now() - 60e3) : null, attempts_left: Math.max(3 - s.attempts[c], 0), next_attempt_at: s.attempts[c] >= 3 ? iso(Date.now() + 3600e3) : null })));
+      }
+      if (rpcName === 'create_campaign_v2') {
+        const cats = body?.p_categories ?? [];
+        if (body?.p_mode === 'targeted' && cats.length === 0) return fail('targeted_requires_categories');
+        if (cats.some((c) => !ALLCATS.includes(c))) return fail('invalid_categories');
+        s.created.push({ rpc: rpcName, body });
+        s.balance -= 1;
+        return send('33333333-3333-3333-3333-333333333333');
+      }
       if (rpcName === 'get_my_tester_profile') {
         if (!s.matching) return MISSING('get_my_tester_profile');
         return send(s.tester ? [s.tester] : []);
@@ -207,6 +299,13 @@ export function createBackend(opts = {}) {
         const pg = s.pages[id];
         if (pg?.reservedByOther) return fail('campaign_reserved');
         let r = liveRes(id);
+        if (!r && s.v2) {
+          const row = s.feed.find((x) => x.campaign_id === id);
+          const mode = row?.testing_mode ?? pg?.mode ?? 'open';
+          const required = row?.target_categories ?? pg?.required ?? [];
+          const e = eligibilityOf(mode, required);
+          if (!e.eligible) return fail('not_eligible', e.reason);
+        }
         if (!r) {
           const prev = s.reservation && s.reservation.campaign_id === id ? s.reservation : null;
           r = s.reservation = { campaign_id: id, firstAt: prev ? prev.firstAt : now(), startedAt: now(), expiresAt: now() + s.holdMs };
@@ -245,8 +344,8 @@ export function createBackend(opts = {}) {
         return send(s.ledger);
       }
       if (p === '/rest/v1/campaigns') {
-        if (!s.matching && /target_categories/.test(url.search)) {
-          return send({ code: '42703', details: null, hint: null, message: 'column campaigns.target_categories does not exist' }, 400);
+        if ((!s.matching && /target_categories/.test(url.search)) || (!s.v2 && /testing_mode/.test(url.search))) {
+          return send({ code: '42703', details: null, hint: null, message: 'column campaigns.' + (/testing_mode/.test(url.search) && s.matching ? 'testing_mode' : 'target_categories') + ' does not exist' }, 400);
         }
         return send(s.dashCampaigns);
       }

@@ -6,9 +6,11 @@ import { Alert, Button, ButtonLink, PageHeader } from '../components/ui';
 import { useAuth } from '../context/AuthContext';
 import { createCampaign, fetchProfile, friendlyError } from '../lib/api';
 import { CAMPAIGN_EXPIRY_DAYS } from '../lib/limits';
+import type { TestingMode } from '../lib/matching';
 import { LIMITS, isValidPublicUrl, lengthBetween } from '../lib/validation';
 
 interface Errors {
+  categories?: string;
   name?: string;
   url?: string;
   description?: string;
@@ -24,6 +26,7 @@ export function CreateTask() {
   const [description, setDescription] = useState('');
   const [task, setTask] = useState('');
   const [targetCategories, setTargetCategories] = useState<string[]>([]);
+  const [mode, setMode] = useState<TestingMode>('open');
   const [errors, setErrors] = useState<Errors>({});
   const [submitting, setSubmitting] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
@@ -39,6 +42,7 @@ export function CreateTask() {
     if (!lengthBetween(task, LIMITS.taskMin, LIMITS.taskMax)) {
       e.task = `Describe the task in ${LIMITS.taskMin}–${LIMITS.taskMax} characters.`;
     }
+    if (mode === 'targeted' && targetCategories.length === 0) e.categories = 'Choose at least one tester category, or switch to open testing.';
     return e;
   }
 
@@ -51,7 +55,7 @@ export function CreateTask() {
 
     setSubmitting(true);
     try {
-      await createCampaign({ name, url, description, task, targetCategories });
+      await createCampaign({ name, url, description, task, mode, targetCategories });
       // Balance is authoritative in Postgres; re-read it rather than guessing.
       const fresh = await fetchProfile();
       setBalance(fresh.credit_balance);
@@ -162,18 +166,66 @@ export function CreateTask() {
           )}
         </Field>
 
-        <CategoryPicker
-          legend="Preferred testers (optional)"
-          hint={
-            <>
-              <strong>Targeted Tester Matching:</strong> your task is recommended first to testers who chose these categories.
-              It is a preference, not a guarantee — any tester can still pick it up, and with none selected it is shown to everyone.
-            </>
-          }
-          value={targetCategories}
-          onChange={setTargetCategories}
-          testIdPrefix="target"
-        />
+        <fieldset data-testid="mode-picker">
+          <legend className="text-sm font-semibold text-slate-800">Who can take this test?</legend>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            {(
+              [
+                {
+                  id: 'open' as const,
+                  title: 'Open testing',
+                  body: 'Any eligible tester can take it. You can optionally pick categories to recommend it to first — nobody is excluded, so it is usually tested sooner.',
+                },
+                {
+                  id: 'targeted' as const,
+                  title: 'Targeted testing',
+                  body: 'Only testers who match at least one category you choose can start it, and the server enforces that. Professional categories also need a short self-reported screening. Fewer testers qualify, so it may take longer.',
+                },
+              ]
+            ).map((m) => (
+              <label
+                key={m.id}
+                data-testid={`mode-${m.id}`}
+                className={`flex cursor-pointer items-start gap-3 rounded-lg border p-4 text-sm ${mode === m.id ? 'border-indigo-500 bg-indigo-50' : 'border-slate-300 bg-white hover:bg-slate-50'}`}
+              >
+                <input type="radio" name="testing-mode" className="mt-0.5 h-4 w-4 shrink-0 accent-indigo-600" checked={mode === m.id} onChange={() => setMode(m.id)} />
+                <span className="min-w-0">
+                  <span className="block font-semibold text-slate-900">{m.title}</span>
+                  <span className="mt-0.5 block text-xs text-slate-600">{m.body}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+
+        <div>
+          <CategoryPicker
+            legend={mode === 'targeted' ? 'Required tester categories (choose at least one)' : 'Recommend it to (optional)'}
+            hint={
+              mode === 'targeted' ? (
+                <>
+                  A tester must have <strong>at least one</strong> of these in their profile. Tech-Savvy Users, Founders &amp; Product
+                  Builders and Business &amp; Office Users must also have completed a short <strong>self-reported</strong> experience
+                  screening (not a verified credential). Students &amp; Learners and Everyday &amp; Non-Technical Users need no screening.
+                  If nobody tests it within {CAMPAIGN_EXPIRY_DAYS} days, your credit is refunded.
+                </>
+              ) : (
+                <>
+                  <strong>Targeted Tester Matching:</strong> the task is recommended first to testers who chose these categories. It is a
+                  preference, not a restriction — any tester can still pick it up.
+                </>
+              )
+            }
+            value={targetCategories}
+            onChange={setTargetCategories}
+            testIdPrefix="target"
+          />
+          {errors.categories && (
+            <p role="alert" className="mt-2 text-sm text-red-700" data-testid="categories-error">
+              {errors.categories}
+            </p>
+          )}
+        </div>
 
         {serverError && <Alert tone="error">{serverError}</Alert>}
 

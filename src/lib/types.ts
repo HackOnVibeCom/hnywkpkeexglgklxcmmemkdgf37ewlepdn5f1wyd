@@ -1,3 +1,6 @@
+export type { TestingMode } from './matching';
+import type { TestingMode } from './matching';
+
 export interface Profile {
   id: string;
   credit_balance: number;
@@ -33,10 +36,66 @@ export interface OpenCampaign {
  * One row of the matched Discover feed (list_matched_campaigns): an OpenCampaign plus who the founder wanted.
  * match_categories = the founder's target categories that overlap MY categories (empty = not recommended).
  */
+export type Fit = 'recommended' | 'eligible' | 'not_eligible';
+
 export interface MatchedCampaign extends OpenCampaign {
+  /** Open testing: PREFERRED categories (a recommendation hint). Targeted testing: REQUIRED categories. */
   target_categories: string[];
   match_categories: string[];
   is_recommended: boolean;
+  /** Matching v2. Before migration 7 every campaign is treated as 'open' and eligible. */
+  testing_mode: TestingMode;
+  fit: Fit;
+  eligible: boolean;
+  ineligible_reason: string | null;
+  missing_screening: string[];
+}
+
+/** get_campaign_eligibility: can I start this task, and if not, why (enforced server-side). */
+export interface CampaignEligibility {
+  campaign_id: string;
+  testing_mode: TestingMode;
+  required_categories: string[];
+  eligible: boolean;
+  /** open | eligible | in_progress | no_profile | category_mismatch | screening_required */
+  reason: string;
+  missing_screening: string[];
+  overlap: string[];
+  own_campaign: boolean;
+}
+
+export interface ScreeningQuestion {
+  id: string;
+  prompt: string;
+  options: { id: string; label: string }[];
+}
+
+export interface Screening {
+  category: string;
+  version: number;
+  /** How many of the question areas must report hands-on experience. */
+  min_areas: number;
+  qualified: boolean;
+  max_attempts: number;
+  attempts_left: number;
+  questions: ScreeningQuestion[];
+}
+
+export interface ScreeningResult {
+  passed: boolean;
+  areas: number;
+  min_areas: number;
+  version: number;
+  attempts_left: number;
+}
+
+export interface ScreeningStatus {
+  category: string;
+  version: number;
+  qualified: boolean;
+  qualified_at: string | null;
+  attempts_left: number;
+  next_attempt_at: string | null;
 }
 
 /** My OPTIONAL tester profile. Private: no other identity can read it. */
@@ -57,6 +116,8 @@ export interface SaveTesterProfileInput {
 export interface DiscoverFeed {
   campaigns: MatchedCampaign[];
   matching: boolean;
+  /** true when the backend supports Open vs Targeted testing (migration 7). */
+  modes: boolean;
 }
 
 /** get_campaign_for_test. project_url is only present while the caller holds a live reservation. */
@@ -133,6 +194,8 @@ export interface MyCampaign {
   closed_at: string | null;
   /** Preferred tester categories (absent / empty = anyone; also absent before migration 6 is applied). */
   target_categories?: string[];
+  /** Matching v2 (absent before migration 7 = open). */
+  testing_mode?: TestingMode;
   project: { name: string; url: string; description: string | null } | null;
   submissions: Submission[];
   /** A tester currently holds a live reservation (so Cancel is refused). Derived from RLS-visible rows. */
@@ -167,6 +230,10 @@ export interface CreateCampaignInput {
   url: string;
   description: string;
   task: string;
-  /** Optional preferred tester categories (category ids). Empty = anyone. */
+  /**
+   * 'open' (default): categories are optional PREFERENCES (recommendation only).
+   * 'targeted': categories are REQUIRED; only eligible testers can start the task.
+   */
+  mode?: TestingMode;
   targetCategories?: string[];
 }

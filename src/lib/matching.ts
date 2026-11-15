@@ -111,3 +111,71 @@ export function suggestCategories(bio: string | null | undefined): CategorySugge
   // Most evidence first; ties keep the fixed category order (stable sort), so the result is deterministic.
   return out.sort((a, b) => b.matched.length - a.matched.length);
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Matching v2: open vs targeted testing and category screening (pure helpers; the RULES live in Postgres).
+// ---------------------------------------------------------------------------------------------------------------
+
+export type TestingMode = 'open' | 'targeted';
+
+/** The three professional categories need a (self-reported) screening before a TARGETED task can be reserved. */
+export const SCREENING_CATEGORY_IDS = ['tech_savvy', 'founders_builders', 'business_office'] as const;
+export type ScreeningCategoryId = (typeof SCREENING_CATEGORY_IDS)[number];
+
+export const requiresScreening = (id: string): id is ScreeningCategoryId => (SCREENING_CATEGORY_IDS as readonly string[]).includes(id);
+
+/** The only wording used for a completed screening. It is self-reported and NOT a verified credential. */
+export const SCREENED_LABEL = 'Screened — self-reported experience';
+
+export type IneligibleReason = 'no_profile' | 'category_mismatch' | 'screening_required';
+
+export interface Explanation {
+  title: string;
+  body: string;
+  /** What the tester can do about it. */
+  action: 'profile' | 'screening' | null;
+  /** For action = screening: the category whose screening unlocks the task. */
+  screeningCategory: ScreeningCategoryId | null;
+}
+
+const list = (ids: readonly string[]) => ids.map(categoryLabel).join(', ');
+
+/** Plain-language reason why a tester cannot start a targeted task (mirrors the server's reason codes). */
+export function explainIneligible(reason: string | null | undefined, required: readonly string[], missingScreening: readonly string[] = []): Explanation {
+  const req = list(required);
+  if (reason === 'no_profile') {
+    return {
+      title: 'This task is for specific kinds of testers',
+      body: `The founder asked for testers in: ${req}. You have no tester profile yet. Add one with a matching category to be able to take it.`,
+      action: 'profile',
+      screeningCategory: null,
+    };
+  }
+  if (reason === 'category_mismatch') {
+    return {
+      title: 'Your tester profile does not match this task',
+      body: `The founder asked for testers in: ${req}. Your profile does not include any of these categories. If one of them describes you, add it to your profile.`,
+      action: 'profile',
+      screeningCategory: null,
+    };
+  }
+  if (reason === 'screening_required') {
+    const first = missingScreening.find(requiresScreening) ?? null;
+    const what = missingScreening.length > 0 ? list(missingScreening) : req;
+    return {
+      title: 'A short screening is needed first',
+      body: `This task asks for: ${req}. Your profile matches, but ${what} needs a quick screening about your hands-on experience before you can take targeted tasks. It is self-reported (not a verified credential) and takes about a minute.`,
+      action: 'screening',
+      screeningCategory: first,
+    };
+  }
+  return { title: 'You cannot take this task', body: 'This task is restricted to certain testers.', action: null, screeningCategory: null };
+}
+
+/** Short label for a Discover card. */
+export function shortReason(reason: string | null | undefined): string {
+  if (reason === 'no_profile') return 'needs a tester profile';
+  if (reason === 'category_mismatch') return 'your profile does not match';
+  if (reason === 'screening_required') return 'screening needed';
+  return 'not eligible';
+}

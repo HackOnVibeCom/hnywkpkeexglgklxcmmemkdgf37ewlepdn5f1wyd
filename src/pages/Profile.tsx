@@ -1,23 +1,28 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { ScreeningPanel } from '../components/Screening';
 import { CategoryPicker } from '../components/CategoryPicker';
 import { Field } from '../components/form';
 import { Alert, Button, ButtonLink, PageHeader, Spinner } from '../components/ui';
-import { deleteTesterProfile, friendlyError, getMyTesterProfile, saveTesterProfile } from '../lib/api';
-import { categoryLabel, normalizeCategories, suggestCategories, type CategorySuggestion } from '../lib/matching';
-import type { TesterProfile } from '../lib/types';
+import { deleteTesterProfile, friendlyError, getMyScreeningStatus, getMyTesterProfile, saveTesterProfile } from '../lib/api';
+import { categoryLabel, normalizeCategories, requiresScreening, SCREENED_LABEL, suggestCategories, SCREENING_CATEGORY_IDS, type CategorySuggestion } from '../lib/matching';
+import type { ScreeningStatus, TesterProfile } from '../lib/types';
 import { useLoad } from '../lib/useLoad';
 
 const NICK_MAX = 30;
 const BIO_MAX = 280;
 
 export function Profile() {
-  const { data, error, loading, reload } = useLoad<{ profile: TesterProfile | null }>(async () => ({ profile: await getMyTesterProfile() }));
+  const { data, error, loading, reload } = useLoad<{ profile: TesterProfile | null; screening: ScreeningStatus[] }>(async () => {
+    const [profile, screening] = await Promise.all([getMyTesterProfile(), getMyScreeningStatus().catch(() => [] as ScreeningStatus[])]);
+    return { profile, screening };
+  });
 
   return (
     <div className="max-w-2xl">
       <PageHeader
         title="Tester profile"
-        subtitle="Optional. Tell UXBarter what kind of tester you are, and Discover will show the tasks aimed at people like you first. Everything else stays available."
+        subtitle="Optional. Tell UXBarter what kind of tester you are, and Discover will show the tasks aimed at people like you first. Open tasks always stay available."
       />
       {error && (
         <div className="mb-6">
@@ -28,7 +33,71 @@ export function Profile() {
       )}
       {loading && !data && <Spinner label="Loading your profile…" />}
       {data && <ProfileForm initial={data.profile} onChanged={reload} />}
+      {data && data.screening.length > 0 && <ScreeningSection status={data.screening} onChanged={reload} />}
     </div>
+  );
+}
+
+function ScreeningSection({ status, onChanged }: { status: ScreeningStatus[]; onChanged: () => void }) {
+  const [params] = useSearchParams();
+  const wanted = params.get('screening') ?? '';
+  const [open, setOpen] = useState<string | null>(requiresScreening(wanted) ? wanted : null);
+  const sectionRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (requiresScreening(wanted)) {
+      sectionRef.current?.scrollIntoView?.({ block: 'start' });
+    }
+  }, [wanted]);
+  const byCat = new Map(status.map((s) => [s.category, s]));
+  return (
+    <section ref={sectionRef} className="mt-12 max-w-2xl" aria-labelledby="screening-h" data-testid="screening-section">
+      <h2 id="screening-h" className="text-xl font-bold tracking-tight text-slate-900">
+        Experience screening
+      </h2>
+      <p className="mt-2 text-sm text-slate-600">
+        Founders can ask for <strong>targeted</strong> testers. To take a targeted task for <strong>Tech-Savvy Users</strong>,{' '}
+        <strong>Founders &amp; Product Builders</strong> or <strong>Business &amp; Office Users</strong>, your profile must include that
+        category <em>and</em> you must complete a short screening about your hands-on experience. Students &amp; Learners and Everyday &amp;
+        Non-Technical Users need none. Screening is <strong>self-reported</strong> — it is not a verified credential — and it never
+        affects open tasks.
+      </p>
+      <ul className="mt-4 space-y-3">
+        {SCREENING_CATEGORY_IDS.map((cat) => {
+          const s = byCat.get(cat);
+          return (
+            <li key={cat} className="rounded-xl border border-slate-200 bg-white p-4" data-testid={`screening-row-${cat}`}>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="font-semibold text-slate-900">{categoryLabel(cat)}</p>
+                  {s?.qualified ? (
+                    <p className="mt-0.5 text-sm font-medium text-emerald-800" data-testid={`screened-${cat}`}>
+                      ✓ {SCREENED_LABEL}
+                    </p>
+                  ) : (
+                    <p className="mt-0.5 text-sm text-slate-500" data-testid={`not-screened-${cat}`}>
+                      Not screened yet
+                      {s && s.attempts_left === 0 && s.next_attempt_at ? ` · next attempt after ${new Date(s.next_attempt_at).toLocaleString()}` : ''}
+                    </p>
+                  )}
+                </div>
+                {open !== cat && !s?.qualified && (
+                  <Button type="button" variant="secondary" onClick={() => setOpen(cat)} data-testid={`start-screening-${cat}`}>
+                    Take the screening
+                  </Button>
+                )}
+              </div>
+              {open === cat && (
+                <ScreeningPanel
+                  category={cat}
+                  onDone={onChanged}
+                  onClose={() => setOpen(null)}
+                />
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }
 
@@ -95,8 +164,9 @@ function ProfileForm({ initial, onChanged }: { initial: TesterProfile | null; on
     <form onSubmit={onSubmit} noValidate className="space-y-6" data-testid="profile-form">
       <Alert tone="info" title="Targeted Tester Matching">
         Founders can say which kinds of testers they would like. If you pick categories here, tasks that asked for them are
-        marked <strong>Recommended for you</strong> and listed first. It is a preference, not a gate: you can still test any
-        task, and your rewards never depend on matching.
+        marked <strong>Recommended for you</strong> and listed first. For <strong>open</strong> tasks this is only a recommendation:
+        you can still test any of them, and your rewards never depend on matching. <strong>Targeted</strong> tasks (where the founder
+        requires certain categories) can only be started by matching testers — see the screening section below.
       </Alert>
 
       <Field label="Nickname" error={errors.nickname} hint="Only you see this. It is never shown to founders or other testers." counter={{ value: nickname, max: NICK_MAX }}>

@@ -69,6 +69,14 @@ const oc = await createV2(U, 'open', []);
 ok(await failsWith(() => as(U, () => q(`update public.campaigns set testing_mode='targeted' where id='${oc}'`)), 'permission denied'), 'an owner cannot flip a campaign mode with a plain UPDATE');
 ok(await failsWith(() => as(V, () => q(`insert into public.test_reservations (campaign_id, tester_id, expires_at) values ('${oc}','${V}', now() + interval '1 hour')`)), 'permission denied'), 'reservations cannot be inserted directly by clients');
 ok((await q(`select count(*)::int n from pg_trigger where tgname='test_reservations_eligibility' and not tgisinternal`))[0].n === 1, 'the eligibility trigger is installed on test_reservations');
+for (const sig of ['public.category_requires_screening(text)', 'public.screening_current_version(text)', 'public.is_screened(uuid,text)', 'public.tester_eligibility(uuid,text,text[])', 'public.enforce_campaign_eligibility()']) {
+  const r = (await q(`select has_function_privilege('anon', '${sig}', 'execute') a, has_function_privilege('authenticated', '${sig}', 'execute') u, has_function_privilege('public', '${sig}', 'execute') p`))[0];
+  ok(!r.a && !r.u && !r.p, `${sig}: EXECUTE is revoked from anon, authenticated and PUBLIC (catalog check)`);
+}
+for (const sig of ['public.create_campaign_v2(text,text,text,text,text,text[])', 'public.list_campaigns_v2()', 'public.get_campaign_eligibility(uuid)', 'public.get_screening(text)', 'public.submit_screening(text,jsonb)', 'public.get_my_screening_status()']) {
+  const r = (await q(`select has_function_privilege('anon', '${sig}', 'execute') a, has_function_privilege('authenticated', '${sig}', 'execute') u, has_function_privilege('public', '${sig}', 'execute') p, (select prosecdef from pg_proc where oid = '${sig}'::regprocedure) d`))[0];
+  ok(!r.a && !r.p && r.u && r.d, `${sig}: authenticated only, SECURITY DEFINER (catalog check)`);
+}
 
 console.log('\n[backward compatibility: nothing existing becomes restricted]');
 {
@@ -111,7 +119,8 @@ console.log('\n[create_campaign_v2]');
     ['unknown category', ['targeted', ['wizards']], 'invalid_categories'],
     ['wrong-case mode', ['Targeted', ['tech_savvy']], 'invalid_mode'],
   ]) {
-    ok(await failsWith(() => createV2(e, ...args), code), `rejected: ${label} -> ${code}`);
+    const fm = await fails(() => createV2(e, ...args));
+    ok(!!fm && new RegExp('(^|\\W)' + code).test(fm), `rejected: ${label} -> ${code}`, String(fm).slice(0, 120));
   }
   ok((await bal(e)) === 1 && (await q('select count(*)::int n from public.campaigns'))[0].n === cBefore, 'rejected requests spend nothing and create nothing (validated before any credit moves)');
   ok(await failsWith(() => as(e, () => q("select public.create_campaign_v2('x','https://example.com','d',$1,'open','{}')", [TASK])), 'invalid_name'), 'the underlying validation still applies');

@@ -78,7 +78,7 @@ const c = await serve(dirCap);
 
 let failed = false;
 try {
-  for (const suite of ['core-ui.mjs', 'lifecycle-ui.mjs', 'phase2-ui.mjs', 'matching-ui.mjs']) {
+  for (const suite of ['core-ui.mjs', 'lifecycle-ui.mjs', 'phase2-ui.mjs', 'matching-ui.mjs', 'matching-v2-ui.mjs']) {
     console.log(`\n══════ ${suite} ══════`);
     // Async spawn: the static servers live in THIS process, so the event loop must stay free.
     const code = await new Promise((res) => {

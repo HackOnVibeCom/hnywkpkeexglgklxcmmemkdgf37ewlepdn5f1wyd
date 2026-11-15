@@ -2,6 +2,7 @@ import { getSupabase } from './supabase';
 import { DAILY_REWARD_CAP, MIN_TEST_SECONDS, RESERVATION_MINUTES } from './limits';
 import { CaptchaError } from './turnstile';
 import type {
+  CampaignEligibility,
   CampaignForTest,
   CancelResult,
   CreateCampaignInput,
@@ -15,6 +16,9 @@ import type {
   OpenCampaign,
   Profile,
   SaveTesterProfileInput,
+  Screening,
+  ScreeningResult,
+  ScreeningStatus,
   StartTestResult,
   SubmitTestInput,
   SubmitTestResult,
@@ -48,6 +52,13 @@ const FRIENDLY: Record<string, string> = {
   campaign_not_found: 'This task no longer exists.',
   invalid_nickname: 'Nickname must be 2–30 characters, without control characters.',
   invalid_bio: 'The short bio must be 280 characters or fewer, without control characters.',
+  not_eligible: 'You are not eligible to start this task.',
+  targeted_requires_categories: 'Targeted testing needs at least one tester category. Choose one, or switch to open testing.',
+  invalid_mode: 'Choose open or targeted testing.',
+  screening_not_required: 'This category has no screening: just add it to your tester profile.',
+  screening_unavailable: 'This screening is not available right now. Please try again later.',
+  already_screened: 'You have already completed this screening.',
+  invalid_answers: 'Please answer every question. Choose "None of these" if nothing applies, and do not combine it with other choices.',
   matching_unavailable: 'Targeted Tester Matching is not available on this server yet. Everything else works as before.',
   invalid_categories: 'One of the selected categories is not valid. Reload the page and choose from the list.',
   campaign_closed: 'This task is no longer open (it was completed, cancelled or expired). No credit was spent or earned — pick another task.',
@@ -87,6 +98,16 @@ export function friendlyError(e: unknown): string {
     const wait = Number.isFinite(left) && left > 0 ? ` About ${Math.ceil(left)} more second${Math.ceil(left) === 1 ? '' : 's'}.` : '';
     return `Please spend at least ${MIN_TEST_SECONDS} seconds actually testing before you submit.${wait}`;
   }
+  if (e instanceof ApiError && e.code === 'not_eligible') {
+    if (e.detail === 'no_profile') return 'This task is for specific kinds of testers. Add a tester profile with a matching category first.';
+    if (e.detail === 'category_mismatch') return 'Your tester profile does not match this task’s required categories.';
+    if (e.detail === 'screening_required') return 'This task needs a completed screening for one of its categories first. You can take it on your tester profile page.';
+  }
+  if (e instanceof ApiError && e.code === 'screening_rate_limited') {
+    const at = e.detail ? new Date(e.detail.replace(' ', 'T')) : null;
+    const when = at && !Number.isNaN(at.getTime()) ? ` You can try again after ${at.toLocaleString()}.` : ' Please try again later.';
+    return `You have used all 3 screening attempts for the last 24 hours.${when}`;
+  }
   if (e instanceof ApiError && e.code && FRIENDLY[e.code]) return FRIENDLY[e.code];
   const msg = e instanceof Error ? e.message : String(e);
   if (e instanceof Error && FRIENDLY[e.message]) return FRIENDLY[e.message];
@@ -124,20 +145,65 @@ export const listOpenCampaigns = () => rpc<OpenCampaign[]>('list_open_campaigns'
 /** True when the backend simply does not have the function yet (migration not applied): PostgREST says so in the message. */
 const isMissingFunction = (e: unknown) => e instanceof Error && /could not find the function|PGRST202|schema cache/i.test(e.message);
 
+type V1Row = Omit<MatchedCampaign, 'testing_mode' | 'fit' | 'eligible' | 'ineligible_reason' | 'missing_screening'>;
+const asOpen = (c: V1Row): MatchedCampaign => ({
+  ...c,
+  testing_mode: 'open',
+  fit: c.is_recommended ? 'recommended' : 'eligible',
+  eligible: true,
+  ineligible_reason: null,
+  missing_screening: [],
+});
+
 /**
- * Discover feed with Targeted Tester Matching. If the matching function does not exist yet (the UI was deployed
- * before the database migration), it degrades to the plain feed instead of breaking Discover.
+ * Discover feed. Newest backend first (list_campaigns_v2: Open vs Targeted + eligibility), then Matching v1
+ * (list_matched_campaigns), then the plain feed. Each step is only used when the previous function does not exist
+ * yet (UI deployed before its database migration), so Discover never breaks on a missing function.
  */
 export async function listDiscoverCampaigns(): Promise<DiscoverFeed> {
   try {
-    return { campaigns: await rpc<MatchedCampaign[]>('list_matched_campaigns'), matching: true };
+    const rows = await rpc<Omit<MatchedCampaign, 'is_recommended'>[]>('list_campaigns_v2');
+    return { campaigns: rows.map((r) => ({ ...r, is_recommended: r.fit === 'recommended' })), matching: true, modes: true };
+  } catch (e) {
+    if (!isMissingFunction(e)) throw e;
+  }
+  try {
+    const rows = await rpc<V1Row[]>('list_matched_campaigns');
+    return { campaigns: rows.map(asOpen), matching: true, modes: false };
   } catch (e) {
     if (!isMissingFunction(e)) throw e;
     const plain = await listOpenCampaigns();
     return {
-      campaigns: plain.map((c) => ({ ...c, target_categories: [], match_categories: [], is_recommended: false })),
+      campaigns: plain.map((c) => asOpen({ ...c, target_categories: [], match_categories: [], is_recommended: false })),
       matching: false,
+      modes: false,
     };
+  }
+}
+
+/** Eligibility of the caller for one task, or null when the backend predates Open/Targeted testing (= open). */
+export async function getCampaignEligibility(campaignId: string): Promise<CampaignEligibility | null> {
+  try {
+    return await rpc<CampaignEligibility | null>('get_campaign_eligibility', { p_campaign_id: campaignId });
+  } catch (e) {
+    if (isMissingFunction(e)) return null;
+    throw e;
+  }
+}
+
+/** Screening questions of a professional category (server-held, versioned). */
+export const getScreening = (category: string) => matchingRpc<Screening>('get_screening', { p_category: category });
+
+export const submitScreening = (category: string, answers: Record<string, string[]>) =>
+  matchingRpc<ScreeningResult>('submit_screening', { p_category: category, p_answers: answers });
+
+/** My screening status per professional category; [] on a backend without screening. */
+export async function getMyScreeningStatus(): Promise<ScreeningStatus[]> {
+  try {
+    return (await rpc<ScreeningStatus[]>('get_my_screening_status')) ?? [];
+  } catch (e) {
+    if (isMissingFunction(e)) return [];
+    throw e;
   }
 }
 
@@ -209,7 +275,16 @@ export async function getCampaignForTest(campaignId: string): Promise<CampaignFo
  * targeting). With categories it uses create_targeted_campaign: validated first, then the same credit logic.
  */
 export const createCampaign = (i: CreateCampaignInput) =>
-  i.targetCategories && i.targetCategories.length > 0
+  i.mode === 'targeted'
+    ? matchingRpc<string>('create_campaign_v2', {
+        p_name: i.name,
+        p_url: i.url,
+        p_description: i.description,
+        p_task: i.task,
+        p_mode: 'targeted',
+        p_categories: i.targetCategories ?? [],
+      })
+    : i.targetCategories && i.targetCategories.length > 0
     ? matchingRpc<string>('create_targeted_campaign', {
         p_name: i.name,
         p_url: i.url,
@@ -246,12 +321,13 @@ export async function fetchDashboard(): Promise<DashboardData> {
   const CAMPAIGN_COLS =
     'id,task_description,status,max_responses,response_count,created_at,expires_at,completed_at,closed_at,project:projects(name,url,description)';
   const fetchCampaigns = async () => {
-    const res = await sb.from('campaigns').select(`${CAMPAIGN_COLS},target_categories`).order('created_at', { ascending: false });
-    // Backend without migration 6: the column does not exist (Postgres 42703). Retry without it.
-    if (res.error && (res.error.code === '42703' || /target_categories/.test(res.error.message))) {
-      return sb.from('campaigns').select(CAMPAIGN_COLS).order('created_at', { ascending: false });
+    // Newest columns first; a backend without migration 7 (testing_mode) or 6 (target_categories) answers 42703
+    // (undefined column): retry with fewer columns.
+    for (const extra of [',target_categories,testing_mode', ',target_categories', '']) {
+      const res = await sb.from('campaigns').select(`${CAMPAIGN_COLS}${extra}`).order('created_at', { ascending: false });
+      if (!res.error || !(res.error.code === '42703' || /target_categories|testing_mode/.test(res.error.message))) return res;
     }
-    return res;
+    return sb.from('campaigns').select(CAMPAIGN_COLS).order('created_at', { ascending: false });
   };
 
   const [ledgerRes, rewardCountRes, campaignsRes, reservationsRes] = await Promise.all([

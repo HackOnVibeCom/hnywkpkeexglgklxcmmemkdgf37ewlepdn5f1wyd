@@ -87,8 +87,11 @@ export function Landing() {
           Founders can say who they would most like feedback from, and testers can say what kind of tester they are:
           Tech-Savvy Users, Founders &amp; Product Builders, Business &amp; Office Users, Students &amp; Learners, or Everyday
           &amp; Non-Technical Users. Tasks that fit you are marked <strong>Recommended for you</strong> and shown first.
-          It is a simple, explainable rule — overlapping categories rank higher — not an AI model. It is a preference, not a
-          filter: every open task stays available, and the optional profile never needs an email or password.
+          It is a simple, explainable rule — overlapping categories rank higher — not an AI model, and the optional profile never
+          needs an email or password. Founders choose how a request is shared: <strong>open testing</strong> (any tester can take it;
+          categories only recommend it) or <strong>targeted testing</strong> (only testers who match a required category can start it,
+          enforced by the server; Tech-Savvy, Founders &amp; Product Builders and Business &amp; Office testers first complete a short
+          self-reported screening, which is not a verified credential).
         </p>
       </section>
 

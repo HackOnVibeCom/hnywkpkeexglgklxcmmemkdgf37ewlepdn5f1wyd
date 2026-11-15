@@ -146,10 +146,15 @@ const campaigns7 = await q(cSel);
 const subs7 = await q('select id, friction, suggestion, ux_rating from public.test_submissions order by id');
 const ledger7 = await q('select id, user_id, delta, reason, campaign_id from public.credit_ledger order by id');
 const reservations7 = await q('select id, campaign_id, tester_id, expires_at, starts from public.test_reservations order by id');
+const fnSql7 = "select p.oid::regprocedure::text sig, md5(p.prosrc) m from pg_proc p where p.pronamespace = 'public'::regnamespace order by 1";
+const fnBefore7 = await q(fnSql7);
 let err7 = null;
 try { await db.exec(mig(M7)); } catch (e) { err7 = e.message; }
 ok(err7 === null, 'migration 7 applies cleanly on a populated database', err7 ?? '');
 ok(JSON.stringify(campaigns7) === JSON.stringify(await q(cSel)), 'existing campaigns are unchanged (incl. their v1 preferred categories)');
+const fnAfter7 = await q(fnSql7);
+ok(fnBefore7.length > 20 && fnBefore7.every((a) => fnAfter7.find((b) => b.sig === a.sig)?.m === a.m), `NO existing function body changed (${fnBefore7.length} public functions compared by md5, incl. start_test, submit_test and every credit / referral / refund function)`);
+ok(fnAfter7.length > fnBefore7.length, 'migration 7 only ADDED functions');
 ok((await q("select count(*)::int n from public.campaigns where testing_mode = 'open'"))[0].n === campaigns7.length, 'EVERY existing campaign is OPEN testing (none is silently restricted)');
 const v1pref = await q('select testing_mode, target_categories from public.campaigns where id = $1', [tgt]);
 ok(v1pref[0].testing_mode === 'open' && JSON.stringify(v1pref[0].target_categories) === '["tech_savvy"]', 'the Matching-v1 campaign with preferred categories stays OPEN and keeps its preferred category');

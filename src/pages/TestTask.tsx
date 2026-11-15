@@ -4,7 +4,9 @@ import { Field } from '../components/form';
 import { ShareCard } from '../components/Share';
 import { Alert, Button, ButtonLink, EmptyState, ExternalLink, Spinner } from '../components/ui';
 import { useAuth } from '../context/AuthContext';
-import { ApiError, fetchProfile, friendlyError, getCampaignForTest, startTest, submitTest } from '../lib/api';
+import { ApiError, fetchProfile, friendlyError, getCampaignEligibility, getCampaignForTest, startTest, submitTest } from '../lib/api';
+import { CategoryBadges } from '../components/CategoryPicker';
+import { EligibilityPanel, ModeBadge } from '../components/Eligibility';
 import { clock, hostOf } from '../lib/format';
 import { MIN_TEST_SECONDS, RESERVATION_MINUTES } from '../lib/limits';
 import type { SubmitTestResult } from '../lib/types';
@@ -60,6 +62,9 @@ export function TestTask() {
   const { campaignId = '' } = useParams();
   const { profile, setBalance } = useAuth();
   const { data: campaign, error: loadError, loading, reload } = useLoad(() => getCampaignForTest(campaignId), campaignId);
+  // Eligibility for targeted tasks (null on a backend without Open/Targeted testing = open). The SERVER enforces it when
+  // a reservation is created; this only explains. A failed lookup never blocks the page.
+  const { data: elig, reload: reloadElig } = useLoad(() => getCampaignEligibility(campaignId).catch(() => null), campaignId);
   const nowMs = useNow();
 
   const [draft0] = useState(() => loadDraft(campaignId));
@@ -153,6 +158,7 @@ export function TestTask() {
       reload(); // re-read the page: the website URL is only returned to the holder of a live reservation
     } catch (err) {
       setStartError(friendlyError(err));
+      if (err instanceof ApiError && err.code === 'not_eligible') reloadElig(); // the server refused: show the real reason
       if (err instanceof ApiError && err.code && RESYNC_CODES.has(err.code)) reload();
     } finally {
       setStarting(false);
@@ -215,6 +221,18 @@ export function TestTask() {
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Product to test</p>
           <h1 className="mt-1 break-words text-2xl font-bold tracking-tight text-slate-900">{campaign.project_name}</h1>
           {campaign.description && <p className="mt-2 break-words text-sm text-slate-600">{campaign.description}</p>}
+          {elig && elig.testing_mode === 'targeted' && (
+            <div className="mt-3" data-testid="targeted-info">
+              <ModeBadge mode="targeted" />
+              <p className="mt-2 text-xs text-slate-500">The founder asked for testers in (at least one):</p>
+              <CategoryBadges ids={elig.required_categories} highlight={elig.overlap} className="mt-1.5" />
+              {elig.eligible && (
+                <p className="mt-2 text-xs font-medium text-emerald-800" data-testid="eligible-note">
+                  {elig.reason === 'in_progress' ? 'Your reservation is in progress.' : 'You’re eligible for this targeted task.'}
+                </p>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-5">
@@ -241,6 +259,8 @@ export function TestTask() {
               not vetted by UXBarter — don’t enter real passwords or payment details.
             </p>
           </div>
+        ) : elig && !elig.eligible ? (
+          <EligibilityPanel elig={elig} />
         ) : (
           <div className="rounded-xl border border-slate-200 bg-white p-5">
             <p className="text-sm font-semibold text-slate-900">Step 1 — reserve this task</p>
@@ -266,7 +286,7 @@ export function TestTask() {
 
       {!hasReservation ? (
         <div className="rounded-xl border border-dashed border-slate-300 bg-white px-6 py-12 text-center text-sm text-slate-500 lg:col-span-3">
-          Step 2 (your feedback) unlocks after you reserve the task.
+          {elig && !elig.eligible ? 'You can read the task, but feedback is only open to eligible testers.' : 'Step 2 (your feedback) unlocks after you reserve the task.'}
         </div>
       ) : (
         <form onSubmit={onSubmit} noValidate className="space-y-6 lg:col-span-3">

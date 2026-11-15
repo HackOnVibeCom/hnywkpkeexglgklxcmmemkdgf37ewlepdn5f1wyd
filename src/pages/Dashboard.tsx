@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Alert, Button, ButtonLink, EmptyState, ExternalLink, PageHeader, Spinner } from '../components/ui';
 import { CategoryBadges } from '../components/CategoryPicker';
+import { ModeBadge } from '../components/Eligibility';
 import { ProofCard, ReferralStats, ShareCard } from '../components/Share';
 import { useAuth } from '../context/AuthContext';
 import { cancelCampaign, fetchDashboard, fetchProfile, friendlyError, getMyReferrals, settleAll } from '../lib/api';
@@ -121,7 +122,10 @@ function CampaignCard({ c, nowMs, onChanged }: { c: MyCampaign; nowMs: number; o
       <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-800">{c.task_description}</p>
       {(c.target_categories?.length ?? 0) > 0 && (
         <div className="mt-3" data-testid="dash-targets">
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Preferred testers</p>
+          <p className="flex flex-wrap items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+            {c.testing_mode === 'targeted' ? 'Required testers (at least one)' : 'Preferred testers'}
+            {c.testing_mode && <ModeBadge mode={c.testing_mode} />}
+          </p>
           <CategoryBadges ids={c.target_categories ?? []} className="mt-1.5" />
         </div>
       )}
