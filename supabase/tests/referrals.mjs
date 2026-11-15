@@ -87,10 +87,10 @@ const balR0 = await bal(R);
 ok((await settleRef(R2)) === 0, 'nothing is paid before the invitee has finished a test');
 ok((await mine(R)).invited === 1 && (await mine(R)).converted === 0 && (await mine(R)).rewarded === 0, 'get_my_referrals: invited 1, converted 0, rewarded 0');
 await completeTest(I1);
-ok((await mine(R)).converted === 1 && (await mine(R)).rewarded === 0, 'after the invitee’s test: converted 1, rewarded 0 (not settled yet)');
-ok((await bal(R)) === balR0, 'the referrer is not paid until settlement runs (lazy, like expiry)');
+ok((await mine(R)).converted === 1 && (await mine(R)).rewarded === 1, 'after the invitee’s test: converted 1, rewarded 1 (settled by the completion itself)');
+ok((await bal(R)) === balR0 + 1, 'the referrer is paid +1 AUTOMATICALLY by the invitee’s completion: no settlement call, no page load, nothing from the referrer');
 const stranger = await mk();
-ok((await settleRef(stranger)) === 1, 'any signed-in client can trigger settlement; 1 reward paid');
+ok((await settleRef(stranger)) === 0, 'the lazy safety net finds nothing left to pay (idempotent: exactly once)');
 ok((await bal(R)) === balR0 + 1, 'referrer earned exactly +1 credit');
 const rr = await ledgerRows(R, 'referral_reward');
 ok(rr.length === 1 && rr[0].delta === 1 && rr[0].referee_id === I1 && rr[0].campaign_id === null, 'one ledger row: +1 referral_reward naming the invitee');
@@ -111,7 +111,7 @@ console.log('\n[a test done BEFORE the claim never counts]');
   await q('delete from public.referrals where referee_id = $1', [early]);
 }
 
-console.log('\n[a test on the REFERRER\'S OWN campaign never counts]');
+console.log('\n[a test on the referrer own campaign DOES count (owner decision, migration 11): a founder inviting a friend to test their product]');
 {
   const ref = await mk(); const friend = await mk();
   ok((await claim(friend, await codeOf(ref))).claimed === true, 'friend claims');
@@ -121,10 +121,10 @@ console.log('\n[a test on the REFERRER\'S OWN campaign never counts]');
   await as(friend, () => q('select public.submit_test($1,true,$2,$3,4,false)', [ownCamp, FB.friction, FB.suggestion]));
   ok((await ledgerRows(friend, 'test_reward')).length === 1, 'the friend really earned a test reward on the referrer’s campaign');
   const m1 = await mine(ref);
-  ok(m1.invited === 1 && m1.converted === 0, 'converted does NOT flip when the friend tests the referrer’s own campaign (no timing link to the feedback they receive)', JSON.stringify(m1));
-  ok((await settleRef(stranger)) === 0 && (await ledgerRows(ref, 'referral_reward')).length === 0, 'and nothing is paid for it');
+  ok(m1.invited === 1 && m1.converted === 1 && m1.rewarded === 1, 'the friend testing the referrer’s own campaign counts: converted 1, rewarded 1 (paid by the completion itself)', JSON.stringify(m1));
+  ok((await settleRef(stranger)) === 0 && (await ledgerRows(ref, 'referral_reward')).length === 1, 'exactly one credit was paid for it and the safety net adds nothing');
   await completeTest(friend);   // a test on someone else's campaign
-  ok((await mine(ref)).converted === 1 && (await settleRef(stranger)) === 1 && (await ledgerRows(ref, 'referral_reward')).length === 1, 'the friend’s test on a third party’s campaign does qualify and pays once');
+  ok((await mine(ref)).converted === 1 && (await ledgerRows(ref, 'referral_reward')).length === 1 && (await settleRef(stranger)) === 0, 'a later test on a third party’s campaign pays nothing more: one reward per referred identity');
 }
 
 console.log('\n[cap: 3 rewarded referrals per referrer]');
@@ -132,15 +132,19 @@ console.log('\n[cap: 3 rewarded referrals per referrer]');
   const boss = await mk(); const codeB = await codeOf(boss);
   const invitees = [];
   for (let i = 0; i < 5; i++) { const u = await mk(); ok((await claim(u, codeB)).claimed === true, `invitee ${i + 1} claims`); invitees.push(u); }
-  for (const u of invitees) await completeTest(u);
   const b0 = await bal(boss);
+  for (const u of invitees) await completeTest(u);
   let paid = 0; for (let i = 0; i < 4; i++) paid += await settleRef(stranger);
-  ok(paid === 3, `exactly 3 rewards are paid across repeated settlements (got ${paid})`);
+  ok(paid === 0 && (await ledgerRows(boss, 'referral_reward')).length === 3, `exactly 3 rewards were paid by the completions; repeated settlements add nothing (got ${paid})`);
   ok((await bal(boss)) === b0 + 3 && (await ledgerRows(boss, 'referral_reward')).length === 3, 'referrer +3 credits, 3 ledger rows');
   const m = await mine(boss);
   ok(m.invited === 5 && m.converted === 5 && m.rewarded === 3 && m.cap === 3, 'get_my_referrals is honest: invited 5, converted 5, rewarded 3 (cap 3)', JSON.stringify(m));
   ok((await settleRef(stranger)) === 0, 'further settlement pays nothing past the cap');
 }
+
+// These two sections build a BACKLOG of unpaid referrals by inserting rewards straight into the ledger (bypassing submit_test). Migration 11's completion trigger
+// would pay each at once, so it is switched off for the fixtures: they test the LAZY SAFETY NET (bounded, parked, no starvation).
+await q('alter table public.credit_ledger disable trigger credit_ledger_referral_settle');
 
 console.log('\n[settlement is bounded and survives a bad row]');
 {
@@ -206,6 +210,8 @@ console.log('\n[rows that can never be paid cannot starve the others]');
   ok((await q('select count(*)::int n from public.referrals where settle_failures > 3'))[0].n === 0, 'a parked row is never tried again');
 }
 
+await q('alter table public.credit_ledger enable trigger credit_ledger_referral_settle');
+
 console.log('\n[global invariants]');
 const drift = await q(`select p.id from public.profiles p left join public.credit_ledger l on l.user_id = p.id group by p.id having p.credit_balance <> coalesce(sum(l.delta),0)`);
 ok(drift.length === 0, 'balance == SUM(ledger) for every user');
@@ -227,7 +233,7 @@ console.log('\n[deleting a paid invitee]');
   const ref = await mk(); const inv = await mk();
   await claim(inv, await codeOf(ref));
   await completeTest(inv);
-  ok((await settleRef(stranger)) >= 1 && (await ledgerRows(ref, 'referral_reward')).length === 1, 'setup: a paid referral exists');
+  ok((await ledgerRows(ref, 'referral_reward')).length === 1, 'setup: a paid referral exists (paid by the completion itself)');
   const orphans = async () => ({
     refRows: (await q(`select count(*)::int n from public.referrals r where not exists (select 1 from public.profiles p where p.id=r.referee_id) or not exists (select 1 from public.profiles p where p.id=r.referrer_id)`))[0].n,
     ledgerRows: (await q(`select count(*)::int n from public.credit_ledger l where not exists (select 1 from public.profiles p where p.id=l.user_id)`))[0].n,
@@ -254,7 +260,7 @@ console.log('\n[deleting a paid invitee]');
   for (let i = 0; i < 3; i++) { const u = await mk(); await claim(u, capCode); await completeTest(u); paidInv.push(u); }
   const fx = await mk(); await claim(fx, capCode); await completeTest(fx);  // a 4th, qualifying but over the cap
   let paidNow = 0; for (let i = 0; i < 4; i++) paidNow += await settleRef(stranger);
-  ok(paidNow === 3 && (await ledgerRows(capR, 'referral_reward')).length === 3, 'cap reached: 3 paid, the 4th is not');
+  ok(paidNow === 0 && (await ledgerRows(capR, 'referral_reward')).length === 3, 'cap reached: 3 paid by the completions, the 4th is not (and the safety net adds nothing)');
   for (const u of paidInv.concat([fx])) await q('delete from auth.users where id = $1', [u]);
   const late = await mk(); await claim(late, capCode); await completeTest(late);
   let paidAfter = 0; for (let i = 0; i < 4; i++) paidAfter += await settleRef(stranger);
