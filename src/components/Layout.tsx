@@ -5,6 +5,7 @@ const NAV = [
   { to: '/discover', label: 'Discover' },
   { to: '/create', label: 'Request a test' },
   { to: '/dashboard', label: 'Dashboard' },
+  { to: '/profile', label: 'Profile' },
 ];
 
 function Logo() {

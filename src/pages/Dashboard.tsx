@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Alert, Button, ButtonLink, EmptyState, ExternalLink, PageHeader, Spinner } from '../components/ui';
+import { CategoryBadges } from '../components/CategoryPicker';
 import { ProofCard, ReferralStats, ShareCard } from '../components/Share';
 import { useAuth } from '../context/AuthContext';
 import { cancelCampaign, fetchDashboard, fetchProfile, friendlyError, getMyReferrals, settleAll } from '../lib/api';
@@ -118,6 +119,12 @@ function CampaignCard({ c, nowMs, onChanged }: { c: MyCampaign; nowMs: number; o
       </div>
       <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Task</p>
       <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-800">{c.task_description}</p>
+      {(c.target_categories?.length ?? 0) > 0 && (
+        <div className="mt-3" data-testid="dash-targets">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Preferred testers</p>
+          <CategoryBadges ids={c.target_categories ?? []} className="mt-1.5" />
+        </div>
+      )}
       <p className="mt-2 text-xs text-slate-400">
         Requested {timeAgo(c.created_at)} · {c.response_count}/{c.max_responses} responses
         {c.status === 'open' && !c.being_tested && Date.parse(c.expires_at) > nowMs && <> · expires {timeLeft(c.expires_at, nowMs).replace(' left', '')} from now</>}

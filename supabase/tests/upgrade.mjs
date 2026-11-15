@@ -102,4 +102,41 @@ ok(await fails(() => as(newcomer, () => q('select * from public.credit_ledger'))
 ok(!(await fails(() => as(uid(1), () => q('select id, user_id, delta, reason, campaign_id, created_at from public.credit_ledger')))), 'the explicit column list the app uses still works');
 ok(await fails(() => as(null, () => q("select public.claim_referral('abcdefabcdef')"))) !== null, 'anon cannot call claim_referral');
 
+console.log('\n[migration 6 (targeted tester matching) on the same populated database]');
+const M6 = '20261115000100_tester_matching.sql';
+const campaignsBefore = await q('select id, owner_id, project_id, task_description, status, response_count, created_at, expires_at from public.campaigns order by id');
+const subsBefore = await q('select id, friction, suggestion, ux_rating from public.test_submissions order by id');
+const ledgerBefore6 = await q('select id, user_id, delta, reason, campaign_id from public.credit_ledger order by id');
+const feedBefore = (await as(uid(6), () => q('select campaign_id from public.list_open_campaigns()'))).map((r) => r.campaign_id).sort();
+let err6 = null;
+try { await db.exec(mig(M6)); } catch (e) { err6 = e.message; }
+ok(err6 === null, 'migration 6 applies cleanly on a populated database', err6 ?? '');
+const campaignsAfter = await q('select id, owner_id, project_id, task_description, status, response_count, created_at, expires_at from public.campaigns order by id');
+ok(JSON.stringify(campaignsBefore) === JSON.stringify(campaignsAfter), 'existing campaigns are unchanged (same ids, owners, tasks, statuses, timestamps)');
+ok((await q('select count(*)::int n from public.campaigns where target_categories = $1::text[]', ['{}']))[0].n === campaignsAfter.length, 'every existing campaign reads as "no preference" (empty target_categories)');
+ok(JSON.stringify(subsBefore) === JSON.stringify(await q('select id, friction, suggestion, ux_rating from public.test_submissions order by id')), 'feedback is byte-identical');
+ok(JSON.stringify(ledgerBefore6) === JSON.stringify(await q('select id, user_id, delta, reason, campaign_id from public.credit_ledger order by id')), 'ledger rows are unchanged');
+const tp = await q("select relrowsecurity from pg_class where oid = 'public.tester_profiles'::regclass");
+ok(tp.length === 1 && tp[0].relrowsecurity, 'tester_profiles exists with RLS enabled');
+ok((await q("select count(*)::int n from pg_policies where tablename = 'tester_profiles'"))[0].n === 0, 'and no policy (default deny)');
+const feedAfter = (await as(uid(6), () => q('select campaign_id from public.list_open_campaigns()'))).map((r) => r.campaign_id).sort();
+ok(JSON.stringify(feedBefore) === JSON.stringify(feedAfter), 'the OLD Discover RPC (used by the currently deployed UI) returns the same rows');
+const matchedAfter = await as(uid(6), () => q('select * from public.list_matched_campaigns()'));
+ok(JSON.stringify(matchedAfter.map((r) => r.campaign_id).sort()) === JSON.stringify(feedAfter) && matchedAfter.every((r) => r.target_categories.length === 0 && !r.is_recommended), 'the new matched feed lists the legacy campaigns, none recommended');
+const oldCreate = (await as(uid(6), () => q("select public.create_project_with_campaign('Post-M6 legacy','https://example.net','d',$1) id", [TASK])))[0].id;
+ok(!!oldCreate, 'the OLD create RPC still works after the upgrade (a deployed old UI keeps working)');
+const newbie = uid(7);
+await db.query('insert into auth.users (id) values ($1)', [newbie]);
+await as(newbie, () => q('select * from public.ensure_profile()'));
+ok((await as(newbie, () => q("select * from public.save_tester_profile('Newbie','hi','{tech_savvy}')"))).length === 1, 'save_tester_profile works with NO default grants (explicit EXECUTE)');
+ok((await as(newbie, () => q('select * from public.get_my_tester_profile()'))).length === 1, 'get_my_tester_profile works');
+const tgt = (await as(newbie, () => q("select public.create_targeted_campaign('Post-M6 targeted','https://example.net','d',$1,'{tech_savvy}') id", [TASK])))[0].id;
+ok(JSON.stringify((await as(newbie, () => q('select target_categories t from public.campaigns where id=$1', [tgt])))[0].t) === '["tech_savvy"]', 'create_targeted_campaign works with NO default grants and stores the audience');
+ok((await as(newbie, () => q('select * from public.list_matched_campaigns()'))).some((r) => r.campaign_id === oldCreate), 'list_matched_campaigns works for authenticated');
+for (const call of ["select * from public.save_tester_profile('X1','b','{}')", 'select * from public.get_my_tester_profile()', 'select public.delete_my_tester_profile()', 'select * from public.list_matched_campaigns()', 'select * from public.tester_profiles']) {
+  ok(await fails(() => as(null, () => q(call))) !== null, 'anon denied: ' + call.slice(0, 44));
+}
+ok(await fails(() => as(newbie, () => q('select * from public.tester_profiles'))) !== null, 'authenticated cannot read tester_profiles directly');
+ok(await fails(() => as(newbie, () => q("select public.normalize_tester_categories('{tech_savvy}')"))) !== null, 'the internal validator is not executable by clients');
+
 summary();

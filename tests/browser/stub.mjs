@@ -71,6 +71,12 @@ export function createBackend(opts = {}) {
     refCode: opts.refCode ?? 'abcdef123456',
     referrals: opts.referrals ?? { code: opts.refCode ?? 'abcdef123456', cap: 3, invited: 0, converted: 0, rewarded: 0 },
     claimResult: opts.claimResult ?? { claimed: true },
+    /** Targeted Tester Matching: false = the backend predates migration 6 (matching RPCs + column are missing). */
+    matching: opts.matching ?? true,
+    /** my optional tester profile ({ nickname, bio, categories, updated_at }) or null */
+    tester: opts.tester ?? null,
+    /** campaigns created through the UI: { rpc, body } */
+    created: [],
   };
   const now = () => Date.now() + s.skewMs;
   const called = (name) => s.calls.filter((c) => c.p.endsWith('/rpc/' + name));
@@ -124,6 +130,49 @@ export function createBackend(opts = {}) {
       if (rpcName === 'get_my_referrals') return send(s.referrals);
       if (rpcName === 'settle_referral_rewards') return send(0);
       if (rpcName === 'list_open_campaigns') return send(s.feed);
+      const MISSING = (fn) => send({ code: 'PGRST202', details: null, hint: null, message: `Could not find the function public.${fn} without parameters in the schema cache` }, 404);
+      if (rpcName === 'list_matched_campaigns') {
+        if (!s.matching) return MISSING('list_matched_campaigns');
+        // Mirrors the SQL ordering: own reservation, then overlap with MY categories (more first), then oldest, then id.
+        const cats = s.tester?.categories ?? [];
+        const rows = s.feed.map((r) => {
+          const target = r.target_categories ?? [];
+          const match = target.filter((x) => cats.includes(x));
+          return { ...r, target_categories: target, match_categories: match, is_recommended: match.length > 0 };
+        });
+        rows.sort((a, b) => Number(b.reserved_by_me) - Number(a.reserved_by_me) || Number(b.is_recommended) - Number(a.is_recommended) || b.match_categories.length - a.match_categories.length || Date.parse(a.created_at) - Date.parse(b.created_at) || (a.campaign_id < b.campaign_id ? -1 : 1));
+        return send(rows);
+      }
+      if (rpcName === 'get_my_tester_profile') {
+        if (!s.matching) return MISSING('get_my_tester_profile');
+        return send(s.tester ? [s.tester] : []);
+      }
+      if (rpcName === 'save_tester_profile') {
+        if (!s.matching) return MISSING('save_tester_profile');
+        const nick = String(body?.p_nickname ?? '').replace(/s+/g, ' ').trim();
+        const bio = String(body?.p_bio ?? '').replace(/s+/g, ' ').trim();
+        const ALL = ['tech_savvy', 'founders_builders', 'business_office', 'students_learners', 'everyday_nontechnical'];
+        const cats = body?.p_categories ?? [];
+        if (nick.length < 2 || nick.length > 30) return fail('invalid_nickname');
+        if (bio.length > 280) return fail('invalid_bio');
+        if (!Array.isArray(cats) || cats.some((c) => !ALL.includes(c))) return fail('invalid_categories');
+        s.tester = { nickname: nick, bio: bio || null, categories: ALL.filter((c) => cats.includes(c)), updated_at: iso(Date.now()) };
+        return send([s.tester]);
+      }
+      if (rpcName === 'delete_my_tester_profile') {
+        if (!s.matching) return MISSING('delete_my_tester_profile');
+        const had = !!s.tester;
+        s.tester = null;
+        return send(had);
+      }
+      if (rpcName === 'create_targeted_campaign') {
+        if (!s.matching) return MISSING('create_targeted_campaign');
+        const ALL = ['tech_savvy', 'founders_builders', 'business_office', 'students_learners', 'everyday_nontechnical'];
+        if ((body?.p_target_categories ?? []).some((c) => !ALL.includes(c))) return fail('invalid_categories');
+        s.created.push({ rpc: rpcName, body });
+        s.balance -= 1;
+        return send('33333333-3333-3333-3333-333333333333');
+      }
       if (rpcName === 'get_my_status') return send({ ...s.status, server_now: iso(now()) });
       if (rpcName === 'settle_expired_campaigns') {
         const n = s.settled;
@@ -176,6 +225,7 @@ export function createBackend(opts = {}) {
         return send({ submission_id: 's1', credits_awarded: 1, balance: s.balance });
       }
       if (rpcName === 'create_project_with_campaign') {
+        s.created.push({ rpc: rpcName, body });
         s.balance -= 1;
         return send('33333333-3333-3333-3333-333333333333');
       }
@@ -194,7 +244,12 @@ export function createBackend(opts = {}) {
         if (m === 'HEAD') return route.fulfill({ status: 200, headers: { ...CORS, 'content-range': '0-0/2' } });
         return send(s.ledger);
       }
-      if (p === '/rest/v1/campaigns') return send(s.dashCampaigns);
+      if (p === '/rest/v1/campaigns') {
+        if (!s.matching && /target_categories/.test(url.search)) {
+          return send({ code: '42703', details: null, hint: null, message: 'column campaigns.target_categories does not exist' }, 400);
+        }
+        return send(s.dashCampaigns);
+      }
       if (p === '/rest/v1/test_reservations') return send(s.dashReservations);
       if (p === '/rest/v1/test_submissions') return send(s.submissions);
       return send({ message: 'unstubbed ' + p }, 404);

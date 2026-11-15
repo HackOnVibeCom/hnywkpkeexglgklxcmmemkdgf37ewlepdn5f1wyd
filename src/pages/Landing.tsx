@@ -79,6 +79,19 @@ export function Landing() {
         </ol>
       </section>
 
+      <section className="rounded-xl border border-indigo-200 bg-indigo-50 p-6" aria-labelledby="matching" data-testid="matching-section">
+        <h2 id="matching" className="text-xl font-bold tracking-tight text-indigo-950">
+          Targeted Tester Matching
+        </h2>
+        <p className="mt-2 max-w-3xl text-sm leading-relaxed text-indigo-900">
+          Founders can say who they would most like feedback from, and testers can say what kind of tester they are:
+          Tech-Savvy Users, Founders &amp; Product Builders, Business &amp; Office Users, Students &amp; Learners, or Everyday
+          &amp; Non-Technical Users. Tasks that fit you are marked <strong>Recommended for you</strong> and shown first.
+          It is a simple, explainable rule — overlapping categories rank higher — not an AI model. It is a preference, not a
+          filter: every open task stays available, and the optional profile never needs an email or password.
+        </p>
+      </section>
+
       <section className="grid gap-10 sm:grid-cols-2" aria-labelledby="gets">
         <div>
           <h2 id="gets" className="text-2xl font-bold tracking-tight text-slate-900">

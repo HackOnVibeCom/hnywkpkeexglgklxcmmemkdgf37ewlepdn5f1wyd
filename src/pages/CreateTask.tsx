@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { CategoryPicker } from '../components/CategoryPicker';
 import { Field } from '../components/form';
 import { Alert, Button, ButtonLink, PageHeader } from '../components/ui';
 import { useAuth } from '../context/AuthContext';
@@ -22,6 +23,7 @@ export function CreateTask() {
   const [url, setUrl] = useState('');
   const [description, setDescription] = useState('');
   const [task, setTask] = useState('');
+  const [targetCategories, setTargetCategories] = useState<string[]>([]);
   const [errors, setErrors] = useState<Errors>({});
   const [submitting, setSubmitting] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
@@ -49,7 +51,7 @@ export function CreateTask() {
 
     setSubmitting(true);
     try {
-      await createCampaign({ name, url, description, task });
+      await createCampaign({ name, url, description, task, targetCategories });
       // Balance is authoritative in Postgres; re-read it rather than guessing.
       const fresh = await fetchProfile();
       setBalance(fresh.credit_balance);
@@ -159,6 +161,19 @@ export function CreateTask() {
             />
           )}
         </Field>
+
+        <CategoryPicker
+          legend="Preferred testers (optional)"
+          hint={
+            <>
+              <strong>Targeted Tester Matching:</strong> your task is recommended first to testers who chose these categories.
+              It is a preference, not a guarantee — any tester can still pick it up, and with none selected it is shown to everyone.
+            </>
+          }
+          value={targetCategories}
+          onChange={setTargetCategories}
+          testIdPrefix="target"
+        />
 
         {serverError && <Alert tone="error">{serverError}</Alert>}
 

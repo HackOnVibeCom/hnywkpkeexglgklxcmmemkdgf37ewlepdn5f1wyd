@@ -33,6 +33,7 @@ No SSR, Node server, WebRTC or PeerJS.
 | Database schema, RLS, atomic RPCs (migrations 1–5) | **Applied to the production Supabase project and verified** with real-project scripts: 57 + 44 checks (true parallel races, one reward / refund per event, credit conservation) and a 19-check expiry/lapse run. |
 | **Phase 1: campaign lifecycle + anti-abuse** | Live (migration 4): 7-day expiry, 15-minute reservations, 60-second minimum testing time, 5 rewarded tests per rolling 24 h, founder cancel, refund exactly once, feedback never deleted. |
 | **Phase 2: referrals, sharing, Turnstile** | Live (migration 5 + frontend): referral links (3 rewarded referrals max), invite cards, a results card built in the browser, and Cloudflare Turnstile with Supabase CAPTCHA **enforced** (sign-ups without a valid token are rejected with HTTP 400). |
+| **Targeted Tester Matching v1** | **Live** (2026-11-15): migration 6 applied to production, UI deployed, merged into `main` (see [below](#targeted-tester-matching-v1)). |
 | Automated tests | `npm run test:db` (PGlite: 119 core + 118 lifecycle + 91 referral + 31 upgrade-rehearsal assertions), `npm run test:browser` (real Chrome, stubbed API: 58 + 77 + 62 checks), `tests/browser/csp-check.mjs` (CSP policy under real Chrome). Real-project scripts in `tests/live/` are opt-in and, with CAPTCHA now enforced, need a token path (e.g. a temporary CAPTCHA pause). |
 | 5 screens (landing, discover, create, test, dashboard) | Implemented and typechecked; layouts checked at 360, 390, 768 and 1280 px. |
 | Deployed site | <https://uxbarter.vercel.app> (Vercel Production; the original <https://peerprobe.vercel.app> stays attached as a secondary domain). Security headers are set in `vercel.json`; a Content-Security-Policy is configured in **Report-Only** mode (see [Known limitations](#known-limitations-honest-list)). |
@@ -140,6 +141,25 @@ Every identity has a public **invite link** `https://<site>/?ref=<code>` (12-cha
 
 **Honest limits:** anonymous identities can't prove they are different people. A determined person can create friends-of-themselves, but each fake invitee must pass the human check (when Turnstile is on), reserve a task, wait 60 s and complete a *real* test of another founder's product (which is real value to that founder), and each referrer is capped at 3 rewards. This raises the cost; it does not make farming impossible. The cap of 3 shapes the referral tree, it is **not** an anti-abuse control: every extra identity mints a starter credit and (as an invitee) one referral credit for its parent, so a person with many identities earns roughly twice per identity. The brakes are Turnstile + Supabase's per-IP sign-in limits, the 60 s minimum and the one-live-reservation rule. Other people's codes cannot be probed: `claim_referral` answers caller-state questions first and gives an unknown-code answer for mutual links, so a code is only ever confirmed by a successful claim (which uses up that identity's single claim).
 
+## Targeted Tester Matching (v1)
+
+> **Status: live in production since 2026-11-15** (migration 6 applied and verified, UI deployed, merged into `main` via PR #2). The rollout record and rollback plan are in [docs/TARGETED_MATCHING_ROLLOUT.md](docs/TARGETED_MATCHING_ROLLOUT.md).
+
+Founders can say which kinds of testers they would like; testers can say what kind of tester they are; Discover lists the tasks that fit a tester first. Everything is **optional** and **anonymous** (no email, no password), and it is a **preference, not a gate**: every open task stays available and rewards never depend on matching.
+
+| Piece | How it works |
+|---|---|
+| Categories | Five fixed categories: Tech-Savvy Users, Founders & Product Builders, Business & Office Users, Students & Learners, Everyday & Non-Technical Users. The allowed ids live in one SQL function (`normalize_tester_categories`) and one TS list (`src/lib/matching.ts`); a test keeps them in sync. |
+| Tester profile (`/profile`) | Optional: nickname (2–30), short bio (≤ 280) and any number of categories. Create, correct and remove at any time. **Private**: table `tester_profiles` has RLS on, **no policy and no grant** — it is only reachable through RPCs that touch the caller's own row, so no identity can read another's nickname or bio, and founders never see testers' profiles. |
+| Bio suggestions | A button runs a **transparent keyword matcher** over the text the user typed and shows the exact words that triggered each suggestion. It is not AI and never selects anything by itself. Keyword lists contain no protected-attribute terms (age, religion, race, gender, health, disability, politics, family status, nationality …); a unit test enforces that and checks that bios mentioning such things produce no suggestion. Negations such as "not a developer" are handled. |
+| Target audience (`/create`) | "Preferred testers (optional)": any of the five categories, stored on the campaign (`campaigns.target_categories`, default empty = anyone). Without a selection the original RPC and payload are used unchanged. With one, `create_targeted_campaign` validates the categories **before any credit moves**, then runs the unchanged `create_project_with_campaign` and stamps the audience — one transaction. |
+| Matching (`list_matched_campaigns`) | Plain set intersection, deterministic and explainable. Order: my own live reservation first (as before), then tasks whose audience **overlaps my categories** (more overlapping categories first), then everything else; oldest first within a group, campaign id as the final tiebreak. The ordering is applied **before** `LIMIT 50`, so a recommended task is never cut off. Each recommended card shows "Recommended for you", who the task is for, and *why* (the overlapping categories — computed for the caller only). No profile, no categories, or a task without an audience → exactly the old order and nothing is recommended. |
+| Unchanged | Credits, reservations, the 60 s minimum, the 5-per-24 h reward cap, own-campaign blocking, refunds, referral rules, RLS. `start_test` / `submit_test` are not touched, so a tester outside a task's audience can still test it and earns the normal credit. |
+| Compatibility | Migration 6 is additive: no existing table is rewritten, no function replaced, no grant or policy changed. The currently deployed UI keeps working after the migration; the new UI degrades to the plain feed (and hides all matching UI) if deployed before the migration. |
+
+**Honest limits.** Categories are **self-declared and unverified** — someone can tick all five. That only changes list order for them, never access or rewards. Tasks show their target categories to every tester (that is the point); nothing about any tester's profile is shown to anyone. Founders do not (yet) see whether a response came from a matching tester — deferred to avoid weakening tester anonymity on small pools.
+
+
 ## Cloudflare Turnstile (human check on first sign-in)
 
 Anonymous sign-in is the only place identities are created, so it is the place for the check. New visitors pass an (invisible unless needed) Cloudflare Turnstile challenge before their anonymous account is created; returning browsers already have a session and are never challenged.
@@ -167,6 +187,9 @@ Anonymous sign-in is the only place identities are created, so it is the place f
 | `supabase/tests/referrals.mjs` | Referral rules in real Postgres: claim rules, own-campaign tests never qualify, idempotent + capped rewards (cap survives deleting invitees), no starvation by unpayable rows, privileges, invariants; mutation-tested (26/26 broken migrations caught). |
 | `node tests/browser/csp-check.mjs` | Builds the app, serves it with the Content-Security-Policy taken from `vercel.json` **enforced**, and drives sign-in, Dashboard (results card), Create and Test pages in real Chrome: fails on any violation raised by our own page. Run it before tightening the policy. |
 | `node tests/browser/brand-check.mjs` | Brand consistency in real Chrome (desktop + 360 px): the old name appears nowhere in visible text, accessible labels, title, share links or the copied results message; Open Graph/Twitter tags, the 1200×630 image and the favicon are consistent. |
+| `npm run test:unit` | The keyword suggester and category list (`src/lib/matching.ts`, imported directly by Node): suggestions show their matched words, whole-word matching, negations ("not a developer"), determinism, and that no keyword is a protected/sensitive-attribute term. |
+| `supabase/tests/matching.mjs` | Targeted Tester Matching in real Postgres (migration 6): the new objects are not a back door (anon denied, no direct table access, RPC-only writes), profile validation and persistence, target persistence and atomic spending, deterministic ordering and explanations, own-campaign/expired/reserved rules, parity with `list_open_campaigns`, limit-after-ordering, credit conservation; `upgrade.mjs` also rehearses migration 6 on a populated database with default grants disabled. Mutation-tested (22/25 killed, the other 3 are equivalent mutants). |
+| `tests/browser/matching-ui.mjs` | The matching UI in real Chrome: profile create / suggest / edit / remove, audience on "Request a test", Discover order + badge + explanation, legacy campaigns, a backend without the migration, anonymity, 360 px layout. |
 
 ## Deployment
 
@@ -196,6 +219,7 @@ Anonymous sign-in is the only place identities are created, so it is the place f
 - **CSP is Report-Only.** `vercel.json` sends `Content-Security-Policy-Report-Only` (self + Cloudflare Turnstile + this Supabase project; no inline scripts; frames denied). Violations show in the browser console; there is no collection endpoint. Enforce it only after the policy has been observed on the real Turnstile widget. Expected, harmless console noise: Cloudflare's own challenge frame reports `data:,` violations of *its* policy.
 - **Hosts are only syntactically validated:** names like `foo.localhost` or `127.0.0.1.nip.io` pass; testers are warned that sites are unvetted, but there is no reporting/blocklist. The URL is only ever opened in the tester's own browser (no server-side fetch).
 - **Two tabs opened simultaneously on a first visit** can each create an anonymous identity (one unused credit is orphaned).
+- **Targeted Tester Matching is self-declared.** Categories and bios are not verified, and the keyword suggester is a convenience, not a classifier. Matching only re-orders the list; it never restricts who can test or earn.
 - **Slow failure when a returning user is offline:** supabase-js retries the token refresh for ~50 s before the retryable error appears. The identity is preserved (verified), only the wait is poor.
 - **Credits are tied to one browser.** Clearing site data = new identity = lost credits. An optional (never mandatory) "save my identity" via Supabase identity linking is a possible later feature.
 - **One-response campaigns:** the task is now exclusive to one reserved tester at a time, so two testers no longer race. If a reservation lapses, the typed answers stay on the device (sessionStorage) and the tester can re-reserve (if nobody else took it) and submit immediately.
@@ -226,6 +250,8 @@ src/                    React app (pages/, components/, lib/, context/)
 supabase/migrations/    Schema, RLS, RPC functions (apply in filename order)
 supabase/tests/         PGlite-based SQL test-suites (isolated package; not part of the app build)
 tests/browser/          Real-Chrome tests of the built app against a stubbed API (isolated package)
+tests/unit/             Node unit tests of the pure matching helpers (src/lib/matching.ts)
+docs/                   Rollout / rollback plans (TARGETED_MATCHING_ROLLOUT.md)
 tests/live/             Real-project end-to-end scripts (guarded by PEERPROBE_LIVE_TESTS=1; they write test data)
 public/_headers         Cloudflare-style headers (inert on Vercel; kept for the HackOnVibe path)
 vercel.json             Vercel build, SPA rewrite, security headers, CSP (Report-Only)
