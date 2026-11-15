@@ -32,6 +32,9 @@ After a valid save of a professional category's answers with consent on, or when
 ## ADR-026 — Smoke test is gated and self-tested
 `scripts/ai-smoke-test.mjs`: separate-project key only (sk-proj-/sk-svcacct-), read from env or ~/.uxbarter/openai-smoke.env, never printed, loopback-only base URL, $0.05 hard ceiling checked before every request, stops at first unexpected failure (exit 3) / failed expectation (exit 1), no retries. Guards proven by `tests/unit/smoke-script.test.mjs` against a mock. Windows: exit via setTimeout (immediate process.exit after fetch crashes libuv).
 
+## First real run (2026-11-15)
+`scripts/ai-smoke-test.mjs` against gpt-6-luna (effort low): 11/11 requests OK, all expectations passed, 10.8k in + 2.8k out tokens, ~$0.0025. Strict schema + effort accepted. Key set up with `scripts/setup-openai-smoke-key.ps1` (hidden prompt, owner-only ACL, ~/.uxbarter/openai-smoke.env). Observed: one-word quote accepted as evidence; reasons may paraphrase campaign text. Still unverified: Supabase hosted runtime, real PostgREST, real concurrency, quality at scale.
+
 ## Gotchas
 - Erasure: `ai_apply_erasure_events()` (reads the contract's events, deletes by subject_ref, THEN advances the cursor, one transaction) runs at the start of every request; optionally schedule it with pg_cron.
 - `AI_MIN_RUN_INTERVAL_SECONDS=0` must be honoured (the Deno e2e found `int()` rejecting 0).
