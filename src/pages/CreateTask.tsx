@@ -179,7 +179,7 @@ export function CreateTask() {
                 {
                   id: 'targeted' as const,
                   title: 'Targeted testing',
-                  body: 'Only testers who match at least one category you choose can start it, and the server enforces that. Professional categories also need a short self-reported screening. Fewer testers qualify, so it may take longer.',
+                  body: 'Only testers who match at least one category you choose can start it, and the server enforces that. Professional categories also need an assessment of their self-reported written experience. Fewer testers qualify, so it may take longer.',
                 },
               ]
             ).map((m) => (
@@ -204,9 +204,10 @@ export function CreateTask() {
             hint={
               mode === 'targeted' ? (
                 <>
-                  A tester must have <strong>at least one</strong> of these in their profile. Tech-Savvy Users, Founders &amp; Product
-                  Builders and Business &amp; Office Users must also have completed a short <strong>self-reported</strong> experience
-                  screening (not a verified credential). Students &amp; Learners and Everyday &amp; Non-Technical Users need no screening.
+                  A tester must have <strong>at least one</strong> of these in their profile. Every category needs the tester's four written
+                  answers. Tech-Savvy Users, Founders &amp; Product Builders and Business &amp; Office Users must also have been
+                  <strong>assessed</strong> from their self-reported experience (not a verified credential). Students &amp; Learners and
+                  Everyday &amp; Non-Technical Users become active once their answers are saved.
                   If nobody tests it within {CAMPAIGN_EXPIRY_DAYS} days, your credit is refunded.
                 </>
               ) : (

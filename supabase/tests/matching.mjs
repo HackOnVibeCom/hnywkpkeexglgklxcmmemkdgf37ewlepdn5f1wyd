@@ -4,7 +4,7 @@
 
 import { createHarness, uid } from './harness.mjs';
 
-const { db, as, q, ok, failsWith, counts } = await createHarness({ quiet: true });
+const { db, as, q, ok, failsWith, counts } = await createHarness({ quiet: true, upTo: '20261115000200_matching_v2.sql' });
 
 const TASK = 'Find the pricing page and tell me which plan you would pick.';
 const FB = { friction: 'The pricing link was hidden in the footer.', suggestion: 'Add a pricing link to the top nav.' };
@@ -145,7 +145,7 @@ ok((await as(U, () => q('select count(*)::int n from public.campaigns where id=$
 
 console.log('\n[matching: deterministic, explainable ordering]');
 // fresh, isolated world so the order is exactly predictable
-const h2 = await createHarness({ quiet: true });
+const h2 = await createHarness({ quiet: true, upTo: '20261115000200_matching_v2.sql' });
 const { db: d2, as: as2, q: q2, ok: ok2 } = h2;
 let n2 = 1;
 const mk2 = async () => { const id = uid(n2++); await d2.query('insert into auth.users (id) values ($1)', [id]); await as2(id, () => q2('select * from public.ensure_profile()')); return id; };

@@ -1,6 +1,6 @@
 // Phase 1 UI: reservations, minimum testing time, expiry, cancel/refund, daily cap — real Chrome,
 // stubbed API (stateful fake in stub.mjs). Verifies what the user SEES and what the client SENDS.
-import { CAMP_ID, DAY, HOST, SITE, createBackend, dashCampaign, feedRow, iso } from './stub.mjs';
+import { CAMP_ID, DAY, HOST, SITE, createReadyBackend as createBackend, dashCampaign, feedRow, iso } from './stub.mjs';
 import { SHOTS, launch, newPage, overflowX, reporter, waitUntil } from './lib.mjs';
 
 const ENV = process.env.BASE_ENV;

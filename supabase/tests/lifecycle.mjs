@@ -5,7 +5,7 @@
 
 import { createHarness, uid } from './harness.mjs';
 
-const { db, as, q, ok, fails, failsWith, summary } = await createHarness();
+const { db, as, q, ok, fails, failsWith, summary } = await createHarness({ autoReady: true });
 
 const URL_ = 'https://example.com/app';
 const TASK = 'Find the pricing page and tell me which plan you would pick.';

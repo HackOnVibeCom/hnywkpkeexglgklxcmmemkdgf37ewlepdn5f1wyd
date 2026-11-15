@@ -3,7 +3,7 @@
 
 import { createHarness, uid } from './harness.mjs';
 
-const { db, as, q, ok, fails, failsWith, summary } = await createHarness();
+const { db, as, q, ok, fails, failsWith, summary } = await createHarness({ autoReady: true });
 
 const TASK = 'Find the pricing page and tell me which plan you would pick.';
 const FB = { friction: 'The pricing link was hidden in the footer.', suggestion: 'Add a pricing link to the top nav.' };

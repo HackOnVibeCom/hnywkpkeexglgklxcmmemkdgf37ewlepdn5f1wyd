@@ -86,7 +86,9 @@ const d = await serve(dirAi);
 
 let failed = false;
 try {
-  for (const suite of ['core-ui.mjs', 'lifecycle-ui.mjs', 'phase2-ui.mjs', 'matching-ui.mjs', 'matching-v2-ui.mjs', 'ai-ui.mjs']) {
+  const ALL_SUITES = ['core-ui.mjs', 'lifecycle-ui.mjs', 'phase2-ui.mjs', 'matching-ui.mjs', 'matching-v2-ui.mjs', 'experience-ui.mjs', 'ai-ui.mjs'];
+  const only = process.env.SUITES ? process.env.SUITES.split(',') : null; // e.g. SUITES=matching-ui.mjs npm run test:browser
+  for (const suite of ALL_SUITES.filter((s) => !only || only.includes(s))) {
     console.log(`\n══════ ${suite} ══════`);
     // Async spawn: the static servers live in THIS process, so the event loop must stay free.
     const code = await new Promise((res) => {
