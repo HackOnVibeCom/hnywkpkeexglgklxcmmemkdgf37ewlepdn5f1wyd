@@ -34,6 +34,7 @@ No SSR, Node server, WebRTC or PeerJS.
 | **Phase 1: campaign lifecycle + anti-abuse** | Live (migration 4): 7-day expiry, 15-minute reservations, 60-second minimum testing time, 5 rewarded tests per rolling 24 h, founder cancel, refund exactly once, feedback never deleted. |
 | **Phase 2: referrals, sharing, Turnstile** | Live (migration 5 + frontend): referral links (3 rewarded referrals max), invite cards, a results card built in the browser, and Cloudflare Turnstile with Supabase CAPTCHA **enforced** (sign-ups without a valid token are rejected with HTTP 400). |
 | **Targeted Tester Matching v1** | **Live** (2026-11-15): migration 6 applied to production, UI deployed, merged into `main` (see [below](#targeted-tester-matching-v1)). |
+| **Matching v2: Open vs Targeted testing + screening** | Built and tested on branch `feat/matching-v2` (migration 7, **not applied, not deployed** — see [below](#matching-v2-open-vs-targeted-testing-and-screening)). |
 | Automated tests | `npm run test:db` (PGlite: 119 core + 118 lifecycle + 91 referral + 31 upgrade-rehearsal assertions), `npm run test:browser` (real Chrome, stubbed API: 58 + 77 + 62 checks), `tests/browser/csp-check.mjs` (CSP policy under real Chrome). Real-project scripts in `tests/live/` are opt-in and, with CAPTCHA now enforced, need a token path (e.g. a temporary CAPTCHA pause). |
 | 5 screens (landing, discover, create, test, dashboard) | Implemented and typechecked; layouts checked at 360, 390, 768 and 1280 px. |
 | Deployed site | <https://uxbarter.vercel.app> (Vercel Production; the original <https://peerprobe.vercel.app> stays attached as a secondary domain). Security headers are set in `vercel.json`; a Content-Security-Policy is configured in **Report-Only** mode (see [Known limitations](#known-limitations-honest-list)). |
@@ -160,6 +161,26 @@ Founders can say which kinds of testers they would like; testers can say what ki
 **Honest limits.** Categories are **self-declared and unverified** — someone can tick all five. That only changes list order for them, never access or rewards. Tasks show their target categories to every tester (that is the point); nothing about any tester's profile is shown to anyone. Founders do not (yet) see whether a response came from a matching tester — deferred to avoid weakening tester anonymity on small pools.
 
 
+## Matching v2: Open vs Targeted testing and screening
+
+> **Status: implemented and tested locally on branch `feat/matching-v2`. Migration 7 is NOT applied to production, the UI is NOT deployed, nothing is merged.** Prerequisites, ordered rollout and rollback: [docs/MATCHING_V2_ROLLOUT.md](docs/MATCHING_V2_ROLLOUT.md).
+
+Founders now choose how a request is shared. Matching v1 (above) is unchanged for **open** testing.
+
+| | Open testing (default) | Targeted testing |
+|---|---|---|
+| Who can take it | Any eligible tester | Only testers who match **at least one** required category (and, for professional categories, have a current screening) |
+| Categories | Optional, only a **recommendation** (v1 behaviour) | **Required**, at least one |
+| Enforcement | none needed | **PostgreSQL**: a trigger on `test_reservations` refuses the reservation (`not_eligible`, with a reason); the UI only explains |
+| Existing campaigns | Every campaign that exists before the migration — including those created with v1 "preferred categories" — **stays open** | Only created through `create_campaign_v2` |
+
+* **Professional categories** (Tech-Savvy Users, Founders & Product Builders, Business & Office Users) need a short **self-reported** experience screening (4 questions each: practical activities, tools, real work). **General categories** (Students & Learners, Everyday & Non-Technical Users) need none.
+* **Not eligible ≠ hidden.** A tester can open a targeted task, sees who it is for and exactly why they cannot start it (no profile / profile does not match / screening needed) with a link to fix it. Discover distinguishes **Recommended for you**, **Eligible** and **Not eligible**, ordered in that sequence (all decided by the database).
+* **Honest wording.** A completed screening is shown as "Screened — self-reported experience". It is not a verified credential, and answers are not stored (only whether it was completed, for which category and version).
+* **Abuse controls.** 3 screening attempts per category per rolling 24 h; malformed submissions never consume an attempt; a new screening version invalidates old passes; editing the profile cannot bypass eligibility (category **and** screening are both required); a profile edit never interrupts a test already in progress (live reservations are not re-checked, and `submit_test` still needs one).
+* **Unchanged:** credits, 15-minute reservations, the 60-second minimum, the 5-per-24 h reward cap, referrals, expiry, refunds, anonymous onboarding and CAPTCHA. No AI is involved.
+
+
 ## Cloudflare Turnstile (human check on first sign-in)
 
 Anonymous sign-in is the only place identities are created, so it is the place for the check. New visitors pass an (invisible unless needed) Cloudflare Turnstile challenge before their anonymous account is created; returning browsers already have a session and are never challenged.
@@ -190,6 +211,8 @@ Anonymous sign-in is the only place identities are created, so it is the place f
 | `npm run test:unit` | The keyword suggester and category list (`src/lib/matching.ts`, imported directly by Node): suggestions show their matched words, whole-word matching, negations ("not a developer"), determinism, and that no keyword is a protected/sensitive-attribute term. |
 | `supabase/tests/matching.mjs` | Targeted Tester Matching in real Postgres (migration 6): the new objects are not a back door (anon denied, no direct table access, RPC-only writes), profile validation and persistence, target persistence and atomic spending, deterministic ordering and explanations, own-campaign/expired/reserved rules, parity with `list_open_campaigns`, limit-after-ordering, credit conservation; `upgrade.mjs` also rehearses migration 6 on a populated database with default grants disabled. Mutation-tested (22/25 killed, the other 3 are equivalent mutants). |
 | `tests/browser/matching-ui.mjs` | The matching UI in real Chrome: profile create / suggest / edit / remove, audience on "Request a test", Discover order + badge + explanation, legacy campaigns, a backend without the migration, anonymity, 360 px layout. |
+| `supabase/tests/matching_v2.mjs` | Matching v2 in real Postgres (migration 7): privileges (catalog-checked), all five categories × four tester kinds, "at least one of several categories", screening content / validation / thresholds / attempt limits / versions, profile-change bypass attempts, in-progress protection, the trigger as last line of defence, Discover fit + order + parity with the v0/v1 feeds, credit and reward regression. `upgrade.mjs` also applies migration 7 to a populated database with default grants disabled and proves **no existing function body changed** (md5) and every existing campaign is open. Mutation-tested (33/34 killed; the survivor is equivalent). |
+| `tests/browser/matching-v2-ui.mjs` | The Open/Targeted UI in real Chrome: both Create modes and their payloads, Discover Recommended / Eligible / Not eligible, the explanation on the task page, the screening flow, a backend without migration 7, Dashboard, 360 px layout. |
 
 ## Deployment
 
@@ -220,6 +243,7 @@ Anonymous sign-in is the only place identities are created, so it is the place f
 - **Hosts are only syntactically validated:** names like `foo.localhost` or `127.0.0.1.nip.io` pass; testers are warned that sites are unvetted, but there is no reporting/blocklist. The URL is only ever opened in the tester's own browser (no server-side fetch).
 - **Two tabs opened simultaneously on a first visit** can each create an anonymous identity (one unused credit is orphaned).
 - **Targeted Tester Matching is self-declared.** Categories and bios are not verified, and the keyword suggester is a convenience, not a classifier. Matching only re-orders the list; it never restricts who can test or earn.
+- **Screening is self-reported, not verification.** Matching v2 asks for hands-on experience, but nobody checks it; the UI never calls it verified. Targeted tasks can only be taken by matching testers, so on a small marketplace they may wait out the 7 days and be refunded.
 - **Slow failure when a returning user is offline:** supabase-js retries the token refresh for ~50 s before the retryable error appears. The identity is preserved (verified), only the wait is poor.
 - **Credits are tied to one browser.** Clearing site data = new identity = lost credits. An optional (never mandatory) "save my identity" via Supabase identity linking is a possible later feature.
 - **One-response campaigns:** the task is now exclusive to one reserved tester at a time, so two testers no longer race. If a reservation lapses, the typed answers stay on the device (sessionStorage) and the tester can re-reserve (if nobody else took it) and submit immediately.
@@ -252,6 +276,7 @@ supabase/tests/         PGlite-based SQL test-suites (isolated package; not part
 tests/browser/          Real-Chrome tests of the built app against a stubbed API (isolated package)
 tests/unit/             Node unit tests of the pure matching helpers (src/lib/matching.ts)
 docs/                   Rollout / rollback plans (TARGETED_MATCHING_ROLLOUT.md)
+docs/verify-migration7.sql  Read-only production verification query for migration 7 (docs/MATCHING_V2_ROLLOUT.md)
 tests/live/             Real-project end-to-end scripts (guarded by PEERPROBE_LIVE_TESTS=1; they write test data)
 public/_headers         Cloudflare-style headers (inert on Vercel; kept for the HackOnVibe path)
 vercel.json             Vercel build, SPA rewrite, security headers, CSP (Report-Only)
