@@ -1,6 +1,6 @@
 # Targeted Tester Matching v1 — rollout and rollback plan
 
-Status: **prepared, nothing applied.** Branch `feat/targeted-matching` (from `main` at the UXBarter release). Every step below that touches production (database, Vercel, GitHub `main`) needs the owner's explicit approval.
+Status: **EXECUTED on 2026-11-15** in the order below (PR #2 opened, migration 6 applied and verified by the owner with a read-only SQL script — 31/31 checks TRUE —, UI deployed as `dpl_AzqhfYDFpBA3DuxMoguyES33dQav`, manual smoke test by the owner, PR #2 merged as a merge commit). Kept as the record and rollback reference. Every step that touches production (database, Vercel, GitHub `main`) needed the owner's explicit approval.
 
 ## What ships
 

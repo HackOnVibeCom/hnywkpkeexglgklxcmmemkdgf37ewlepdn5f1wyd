@@ -33,7 +33,7 @@ No SSR, Node server, WebRTC or PeerJS.
 | Database schema, RLS, atomic RPCs (migrations 1–5) | **Applied to the production Supabase project and verified** with real-project scripts: 57 + 44 checks (true parallel races, one reward / refund per event, credit conservation) and a 19-check expiry/lapse run. |
 | **Phase 1: campaign lifecycle + anti-abuse** | Live (migration 4): 7-day expiry, 15-minute reservations, 60-second minimum testing time, 5 rewarded tests per rolling 24 h, founder cancel, refund exactly once, feedback never deleted. |
 | **Phase 2: referrals, sharing, Turnstile** | Live (migration 5 + frontend): referral links (3 rewarded referrals max), invite cards, a results card built in the browser, and Cloudflare Turnstile with Supabase CAPTCHA **enforced** (sign-ups without a valid token are rejected with HTTP 400). |
-| **Targeted Tester Matching v1** | Built and tested on branch `feat/targeted-matching` (migration 6, **not applied, not deployed** — see [below](#targeted-tester-matching-v1)). |
+| **Targeted Tester Matching v1** | **Live** (2026-11-15): migration 6 applied to production, UI deployed, merged into `main` (see [below](#targeted-tester-matching-v1)). |
 | Automated tests | `npm run test:db` (PGlite: 119 core + 118 lifecycle + 91 referral + 31 upgrade-rehearsal assertions), `npm run test:browser` (real Chrome, stubbed API: 58 + 77 + 62 checks), `tests/browser/csp-check.mjs` (CSP policy under real Chrome). Real-project scripts in `tests/live/` are opt-in and, with CAPTCHA now enforced, need a token path (e.g. a temporary CAPTCHA pause). |
 | 5 screens (landing, discover, create, test, dashboard) | Implemented and typechecked; layouts checked at 360, 390, 768 and 1280 px. |
 | Deployed site | <https://uxbarter.vercel.app> (Vercel Production; the original <https://peerprobe.vercel.app> stays attached as a secondary domain). Security headers are set in `vercel.json`; a Content-Security-Policy is configured in **Report-Only** mode (see [Known limitations](#known-limitations-honest-list)). |
@@ -143,7 +143,7 @@ Every identity has a public **invite link** `https://<site>/?ref=<code>` (12-cha
 
 ## Targeted Tester Matching (v1)
 
-> **Status: implemented and tested locally on branch `feat/targeted-matching`; migration 6 is NOT applied to production and the feature is NOT deployed.** The production site (`main`) does not contain it. Rollout and rollback plan: [docs/TARGETED_MATCHING_ROLLOUT.md](docs/TARGETED_MATCHING_ROLLOUT.md).
+> **Status: live in production since 2026-11-15** (migration 6 applied and verified, UI deployed, merged into `main` via PR #2). The rollout record and rollback plan are in [docs/TARGETED_MATCHING_ROLLOUT.md](docs/TARGETED_MATCHING_ROLLOUT.md).
 
 Founders can say which kinds of testers they would like; testers can say what kind of tester they are; Discover lists the tasks that fit a tester first. Everything is **optional** and **anonymous** (no email, no password), and it is a **preference, not a gate**: every open task stays available and rewards never depend on matching.
 
