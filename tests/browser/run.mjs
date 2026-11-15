@@ -72,13 +72,21 @@ const dirCap = await buildApp('captcha', {
   VITE_SUPABASE_ANON_KEY: 'sb_publishable_stubbed_browser_tests_key',
   VITE_TURNSTILE_SITE_KEY: '1x00000000000000000000AA', // Cloudflare's public always-pass TEST key
 });
+console.log('Building app (stub env + AI matching UI flag)…');
+const dirAi = await buildApp('ai', {
+  VITE_SUPABASE_URL: 'https://testproj.supabase.co',
+  VITE_SUPABASE_ANON_KEY: 'sb_publishable_stubbed_browser_tests_key',
+  VITE_TURNSTILE_SITE_KEY: '',
+  VITE_AI_MATCHING: '1',
+});
 const a = await serve(dirNo);
 const b = await serve(dirEnv);
 const c = await serve(dirCap);
+const d = await serve(dirAi);
 
 let failed = false;
 try {
-  const ALL_SUITES = ['core-ui.mjs', 'lifecycle-ui.mjs', 'phase2-ui.mjs', 'matching-ui.mjs', 'matching-v2-ui.mjs', 'experience-ui.mjs'];
+  const ALL_SUITES = ['core-ui.mjs', 'lifecycle-ui.mjs', 'phase2-ui.mjs', 'matching-ui.mjs', 'matching-v2-ui.mjs', 'experience-ui.mjs', 'ai-ui.mjs'];
   const only = process.env.SUITES ? process.env.SUITES.split(',') : null; // e.g. SUITES=matching-ui.mjs npm run test:browser
   for (const suite of ALL_SUITES.filter((s) => !only || only.includes(s))) {
     console.log(`\n══════ ${suite} ══════`);
@@ -86,7 +94,7 @@ try {
     const code = await new Promise((res) => {
       const child = spawn(process.execPath, [join(here, suite)], {
         stdio: 'inherit',
-        env: { ...process.env, BASE_NOENV: a.url, BASE_ENV: b.url, BASE_CAPTCHA: c.url },
+        env: { ...process.env, BASE_NOENV: a.url, BASE_ENV: b.url, BASE_CAPTCHA: c.url, BASE_AI: d.url },
       });
       child.on('exit', (c) => res(c));
     });
@@ -96,6 +104,7 @@ try {
   a.server.close();
   b.server.close();
   c.server.close();
+  d.server.close();
   rmSync(tmp, { recursive: true, force: true });
 }
 console.log(failed ? '\nBROWSER TESTS FAILED' : '\nBROWSER TESTS PASSED');

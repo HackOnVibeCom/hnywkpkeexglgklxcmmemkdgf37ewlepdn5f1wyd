@@ -424,3 +424,9 @@ enabled = true
 # formatted with uppercase keywords, indent 2, max width 180, trailing commas,
 # and column/key alignment. Set to "null" to emit raw, unformatted SQL.
 # format_options = "{\"keywordCase\":\"upper\",\"indent\":2,\"maxWidth\":180,\"commaStyle\":\"trailing\"}"
+
+# AI matching (feat/ai-matching). The JWT is verified by the platform AND again inside the function (getUser).
+# Secrets (OPENAI_API_KEY, AI_MATCHING_ENABLED, ...) are set with `supabase secrets set` - never in this file.
+[functions.ai-match]
+enabled = true
+verify_jwt = true

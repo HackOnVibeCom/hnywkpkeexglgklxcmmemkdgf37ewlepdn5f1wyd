@@ -5,6 +5,7 @@ import { deleteMyExperience, friendlyError, getExperienceQuestions, saveExperien
 import { ANSWER_MAX, ANSWER_SAVES_PER_DAY, ASSESSMENT_NOTE, categoryLabel, experienceBadge, validateAnswers, type ExperienceBadge } from '../lib/matching';
 import type { ExperienceCategory } from '../lib/types';
 import { useLoad } from '../lib/useLoad';
+import { AI_ENABLED } from '../lib/ai/flag';
 
 /** Small coloured status pill for a category (Active / Pending assessment / Incomplete / Not qualified yet). */
 export function StatusPill({ category, testId }: { category: ExperienceCategory; testId?: string }) {
@@ -134,7 +135,9 @@ export function ExperiencePanel({ category, onSaved, onClose }: { category: stri
                   Your answers are saved and count towards completing your profile, so you can already take open tests.{' '}
                   {saved.reason === 'consent_required'
                     ? 'To have this professional category assessed, allow AI processing below.'
-                    : 'This professional category becomes active when the assessment is done; until then it does not qualify you for targeted tasks.'}
+                    : AI_ENABLED
+                      ? 'Because you allowed AI processing, this professional category is checked automatically now (see “Check my professional answers” below); until then it does not qualify you for targeted tasks.'
+                      : 'This professional category becomes active when the assessment is done; until then it does not qualify you for targeted tasks.'}
                 </Alert>
               )}
               {saved.state === 'incomplete' && <Alert tone="warning" title="Saved, but this category is not in your profile">Tick it in your tester profile above and save the profile to use it.</Alert>}
@@ -157,7 +160,7 @@ export function ExperiencePanel({ category, onSaved, onClose }: { category: stri
 }
 
 /** Explicit, revocable opt-in to AI processing. Nothing is sent to an AI service unless this is on. */
-export function ConsentCard({ granted, onChanged }: { granted: boolean; onChanged: () => void }) {
+export function ConsentCard({ granted, onChanged }: { granted: boolean; onChanged: (granted: boolean) => void }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   async function toggle(next: boolean) {
@@ -165,7 +168,7 @@ export function ConsentCard({ granted, onChanged }: { granted: boolean; onChange
     setErr(null);
     try {
       await setAiConsent(next);
-      onChanged();
+      onChanged(next);
     } catch (e) {
       setErr(friendlyError(e));
     } finally {
@@ -182,6 +185,16 @@ export function ConsentCard({ granted, onChanged }: { granted: boolean; onChange
         tests that are genuinely relevant to you and (2) assess professional categories. It is <strong>off by default</strong>: nothing is sent anywhere until you
         turn it on, and you can turn it off at any time. Your nickname and account id are never sent, and founders and other testers never see your answers.
         Without it you can still take every test you are eligible for; professional categories simply stay pending.
+      </p>
+      <p className="mt-2 text-xs text-slate-500" data-testid="ai-consent-policy">
+        <strong>If you turn it off:</strong> all AI processing stops, and UXBarter erases the analysis and recommendations the AI derived about you. Any professional category
+        that was qualified by an AI assessment goes back to <strong>Pending</strong>, because that qualification came from the AI processing you withdrew; you can still take every
+        open task. Your anonymous account, tester profile, written answers and credits are kept. Turn it on again and your pending categories are checked again.
+      </p>
+      <p className="mt-2 text-xs text-slate-500" data-testid="ai-consent-provider">
+        <strong>Who receives it:</strong> the text is sent to OpenAI, our AI provider, over a secure connection. OpenAI’s API policy says API data is not used to train its
+        models by default and may be kept for up to 30 days for abuse monitoring, so deleting data here removes UXBarter’s copies, not necessarily OpenAI’s. Please do not
+        put contact details or sensitive personal information (health, finances, ID numbers) in your bio or answers.
       </p>
       <label className="mt-4 flex cursor-pointer items-start gap-3 text-sm font-medium text-slate-900">
         <input

@@ -1,6 +1,7 @@
 import { getSupabase } from './supabase';
 import { DAILY_REWARD_CAP, MIN_TEST_SECONDS, RESERVATION_MINUTES } from './limits';
 import { CaptchaError } from './turnstile';
+import { deleteMyAiData } from './ai/aiApi';
 import type {
   CampaignEligibility,
   CampaignForTest,
@@ -226,12 +227,19 @@ export const saveExperienceAnswers = (category: string, answers: Record<string, 
   rpc<ExperienceCategory>('save_experience_answers', { p_category: category, p_answers: answers });
 
 /** Opt in / out of AI processing of my bio and answers. */
-export const setAiConsent = (granted: boolean) =>
-  rpc<{ granted: boolean; policy_version: number; updated_at: string }>('set_ai_consent', { p_granted: granted });
+export const setAiConsent = async (granted: boolean) => {
+  const r = await rpc<{ granted: boolean; policy_version: number; updated_at: string }>('set_ai_consent', { p_granted: granted });
+  // Withdrawal also erases what the AI derived about me right now (the server additionally erases through the erasure events).
+  if (!granted) await deleteMyAiData();
+  return r;
+};
 
 /** Delete my experience answers (one category or all) and the assessment decisions made about them. */
-export const deleteMyExperience = (category?: string) =>
-  rpc<{ deleted_answers: number; deleted_decisions: number }>('delete_my_experience', category ? { p_category: category } : {});
+export const deleteMyExperience = async (category?: string) => {
+  const r = await rpc<{ deleted_answers: number; deleted_decisions: number }>('delete_my_experience', category ? { p_category: category } : {});
+  await deleteMyAiData(); // analyses/verdicts/notes derived from the deleted answers go too
+  return r;
+};
 
 /** My optional tester profile, or null when I have not created one (or the backend predates matching). */
 export async function getMyTesterProfile(): Promise<TesterProfile | null> {

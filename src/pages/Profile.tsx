@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ConsentCard, DeleteExperience, ExperiencePanel, StatusPill } from '../components/Experience';
+import { AssessmentPanel } from '../components/ai/AssessmentPanel';
 import { CategoryPicker } from '../components/CategoryPicker';
 import { Field } from '../components/form';
 import { Alert, Button, ButtonLink, PageHeader, Spinner } from '../components/ui';
@@ -35,6 +36,17 @@ export function Profile() {
   }
 
   const exp = data?.experience ?? null;
+  // Bumped ONLY by an event that legitimately starts an automatic assessment: the tester saved a professional category's answers
+  // while AI processing is on, or switched AI processing on. A page load or refresh never bumps it (so it never costs a request).
+  const [autoToken, setAutoToken] = useState(0);
+  function afterConsentChange(granted: boolean) {
+    reload();
+    if (granted) setAutoToken((n) => n + 1);
+  }
+  function afterAnswersSaved(c: ExperienceCategory) {
+    reload();
+    if (c.requires_assessment && c.state === 'pending_assessment' && c.reason !== 'consent_required' && exp?.ai_consent.granted) setAutoToken((n) => n + 1);
+  }
   return (
     <div className="max-w-2xl">
       <PageHeader
@@ -52,9 +64,10 @@ export function Profile() {
       {data && exp && <CompletionBanner exp={exp} onAnswer={openAnswers} />}
       {data && <ProfileForm initial={data.profile} experience={exp} onChanged={reload} />}
       {data && exp && data.profile && (
-        <ExperienceSection exp={exp} open={open} setOpen={setOpen} sectionRef={sectionRef} onChanged={reload} />
+        <ExperienceSection exp={exp} open={open} setOpen={setOpen} sectionRef={sectionRef} onSaved={afterAnswersSaved} />
       )}
-      {data && exp && <ConsentCard granted={exp.ai_consent.granted} onChanged={reload} />}
+      {data && exp && <AssessmentPanel exp={exp} onChanged={reload} autoToken={autoToken} />}
+      {data && exp && <ConsentCard granted={exp.ai_consent.granted} onChanged={afterConsentChange} />}
       {data && exp && <DeleteExperience hasAnswers={exp.categories.some((c) => c.answers_version !== null)} onDeleted={reload} />}
     </div>
   );
@@ -96,13 +109,13 @@ function ExperienceSection({
   open,
   setOpen,
   sectionRef,
-  onChanged,
+  onSaved,
 }: {
   exp: MyExperience;
   open: string | null;
   setOpen: (cat: string | null) => void;
   sectionRef: React.MutableRefObject<HTMLElement | null>;
-  onChanged: () => void;
+  onSaved: (c: ExperienceCategory) => void;
 }) {
   const selected = exp.categories.filter((c) => c.selected);
   return (
@@ -140,7 +153,7 @@ function ExperienceSection({
               {open === c.category && (
                 <ExperiencePanel
                   category={c.category}
-                  onSaved={() => onChanged()}
+                  onSaved={(res) => onSaved(res)}
                   onClose={() => setOpen(null)}
                 />
               )}

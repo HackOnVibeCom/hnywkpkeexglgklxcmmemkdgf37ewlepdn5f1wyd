@@ -9,8 +9,10 @@ import { CategoryBadges } from '../components/CategoryPicker';
 import { ModeBadge } from '../components/Eligibility';
 import { categoryLabel, shortReason } from '../lib/matching';
 import { DAILY_REWARD_CAP, RESERVATION_MINUTES } from '../lib/limits';
-import { actionableRecommendations, fetchRecommendations } from '../lib/recommendations';
-import type { RecommendationsResponse } from '../lib/aiContract';
+import { actionableRecommendations } from '../lib/recommendations';
+import { fetchAiRecommendations } from '../lib/ai/aiApi';
+import type { AiRecommendation, RecommendationsResponse } from '../lib/aiContract';
+import { RecommendationDetails } from '../components/ai/RecommendationDetails';
 import type { MatchedCampaign, MyExperience, MyStatus } from '../lib/types';
 
 interface DiscoverData {
@@ -47,7 +49,7 @@ export function Discover() {
     if (experience) {
       if (!experience.participation_ready) recommendations = { status: 'profile_incomplete' };
       else if (!experience.ai_consent.granted) recommendations = { status: 'consent_required' };
-      else recommendations = await fetchRecommendations().catch((): RecommendationsResponse => ({ status: 'unavailable' }));
+      else recommendations = await fetchAiRecommendations().catch((): RecommendationsResponse => ({ status: 'unavailable' }));
     }
     return { campaigns: feed.campaigns, status, experience, matching: feed.matching, modes: feed.modes, recommendations };
   });
@@ -160,7 +162,7 @@ export function Discover() {
           {data.recommendations.status === 'ok' && recItems.length > 0 && (
             <ul className="grid gap-4 sm:grid-cols-2">
               {recItems.map((r) => (
-                <TaskCard key={r.campaign_id} c={eligibleById.get(r.campaign_id)!} why={r.reason} {...cardProps} />
+                <TaskCard key={r.campaign_id} c={eligibleById.get(r.campaign_id)!} why={r.reason} rec={r} {...cardProps} />
               ))}
             </ul>
           )}
@@ -177,6 +179,16 @@ export function Discover() {
             <EmptyState title="Personalized recommendations are not available yet" action={<Button onClick={() => setView('browse')}>Browse all eligible tests</Button>}>
               This view will list only tasks that are relevant to your experience once personalization is switched on. Until then nothing is recommended, and every
               task you are eligible for is in “Browse all eligible tests”.
+            </EmptyState>
+          )}
+          {(data.recommendations.status === 'rate_limited' || data.recommendations.status === 'busy' || data.recommendations.status === 'budget_reached') && (
+            <EmptyState title="Recommendations are paused for now" action={<Button onClick={() => setView('browse')}>Browse all eligible tests</Button>}>
+              {data.recommendations.status === 'busy'
+                ? 'Your previous request is still running. Refresh in a few seconds.'
+                : data.recommendations.status === 'rate_limited'
+                  ? 'You have used today’s AI recommendation allowance. It resets daily.'
+                  : 'The AI service has reached its daily budget.'}{' '}
+              Every task you are eligible for is in “Browse all eligible tests”.
             </EmptyState>
           )}
           {data.recommendations.status === 'consent_required' && (
@@ -201,7 +213,9 @@ export function Discover() {
                 </ButtonLink>
               }
             >
-              Recommendations are based on your written experience. Answer the four questions for at least one category to unlock them.
+              {data.recommendations.detail === 'too_little_text'
+                ? 'Recommendations are based on your written experience in categories that are already active. Add a little more about yourself (or wait for a professional category to be assessed), then check again.'
+                : 'Recommendations are based on your written experience. Answer the four questions for at least one category to unlock them.'}
             </EmptyState>
           )}
         </div>
@@ -253,6 +267,7 @@ export function Discover() {
 function TaskCard({
   c,
   why,
+  rec,
   modes,
   matching,
   nowMs,
@@ -261,6 +276,8 @@ function TaskCard({
   c: MatchedCampaign;
   /** shown when the AI service says why this task fits the tester */
   why?: string;
+  /** the AI service's full recommendation (verdict, the tester's own words it relied on, what is not covered) */
+  rec?: AiRecommendation;
   modes: boolean;
   matching: boolean;
   nowMs: number;
@@ -310,6 +327,7 @@ function TaskCard({
           <strong>Why this fits you:</strong> {why}
         </p>
       )}
+      {rec && <RecommendationDetails rec={rec} />}
       {matching && c.target_categories.length > 0 && (
         <div className="mt-3" data-testid="looking-for">
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">

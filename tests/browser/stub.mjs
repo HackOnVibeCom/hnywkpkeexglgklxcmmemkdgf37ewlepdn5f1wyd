@@ -300,6 +300,7 @@ export function createBackend(opts = {}) {
       if (rpcName === 'set_ai_consent') {
         s.consent = !!body?.p_granted;
         s.consentCalls.push(s.consent);
+        if (!s.consent) { s.qualified.clear(); s.notQualified.clear(); } // product decision: withdrawing consent removes AI-derived decisions (migration 10)
         return send({ granted: s.consent, policy_version: 1, updated_at: iso(Date.now()) });
       }
       if (rpcName === 'delete_my_experience') {

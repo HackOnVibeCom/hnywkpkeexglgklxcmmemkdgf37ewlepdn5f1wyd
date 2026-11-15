@@ -122,18 +122,59 @@ export interface EligibleCampaign {
 
 export interface AiRecommendation {
   campaign_id: string;
-  /** why this campaign fits THIS tester, in plain language, shown to the tester (no private answers quoted verbatim) */
+  /** why this campaign fits THIS tester, in plain language, shown to the tester (a paraphrase; verbatim quotes go in `evidence`) */
   reason: string;
-  /** 0..1, optional; the UI never shows it as a promise */
+  /** 0..1, optional and NEVER produced by the AI service (no numeric score exists: relevance is evidence-based); the UI never shows it as a promise */
   score?: number;
+  // ---- optional extras produced by the AI service (the UI renders them when present) ----
+  verdict?: 'strong' | 'good';
+  /** verbatim quotes from the tester's OWN text, verified server-side, each with one sentence on why it is relevant */
+  evidence?: { quote: string; relevance: string }[];
+  /** what the campaign seems to need that the tester's profile does not clearly show */
+  unsupported_requirements?: string[];
 }
 
 /**
  * ok                 `items` are the genuinely relevant, ACTIVELY ELIGIBLE campaigns (may be empty: an honest empty state)
- * unavailable        the service is not reachable / not deployed: the UI says so and offers "Browse all eligible tests"
+ * unavailable        the service is not reachable / not deployed / switched off: the UI says so and offers "Browse all eligible tests"
  * consent_required   the tester has not allowed AI processing
- * profile_incomplete the tester has not completed an experience category yet
+ * profile_incomplete the tester has not completed an experience category yet (participation_ready is false), or has too little
+ *                    text in ACTIVE categories (see `detail`)
+ * rate_limited       the tester used today's AI allowance            busy  a previous request is still running
+ * budget_reached     the service-wide daily budget is used up
+ * (The last three were added by the AI service; each is a "not available right now" state for Discover.)
  */
 export type RecommendationsResponse =
-  | { status: 'ok'; generated_at: string; profile_etag: string; items: AiRecommendation[] }
-  | { status: 'unavailable' | 'consent_required' | 'profile_incomplete' };
+  | { status: 'ok'; generated_at: string; profile_etag: string; items: AiRecommendation[]; understanding?: { summary: string; areas: string[] } | null }
+  | { status: 'profile_incomplete'; detail?: 'not_participation_ready' | 'too_little_text' }
+  | { status: 'unavailable' | 'consent_required' | 'rate_limited' | 'busy' | 'budget_reached' };
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Browser <-> assessment endpoint (same Edge Function, {"action":"assess"}). The browser can only ASK for the caller's own
+// pending professional categories to be assessed; the decision itself is written by the server through
+// service_record_qualification and can never be supplied by the browser.
+// ---------------------------------------------------------------------------------------------------------------------
+
+/**
+ * qualified            recorded: the category is now active (based on self-reported answers, not verified credentials)
+ * not_qualified        recorded: no hands-on experience visible yet; the tester can still take open tasks, and may add true detail
+ * needs_clarification  NOT recorded: the category stays pending; `clarification_questions` are neutral prompts
+ * pending              could not be checked right now (error / limit); stays pending
+ */
+export type AssessmentOutcome = 'qualified' | 'not_qualified' | 'needs_clarification' | 'pending';
+
+export interface AssessmentResult {
+  category: Extract<AiCategoryId, 'tech_savvy' | 'founders_builders' | 'business_office'>;
+  outcome: AssessmentOutcome;
+  /** fixed, human-written text (never model text) */
+  message: string;
+  clarification_questions: string[];
+  /** the public criteria this category is assessed against */
+  criteria: string[];
+}
+
+export interface AssessmentResponse {
+  status: 'ok' | 'consent_required' | 'rate_limited' | 'busy' | 'budget_reached' | 'unavailable';
+  results: AssessmentResult[];
+  generated_at?: string;
+}
