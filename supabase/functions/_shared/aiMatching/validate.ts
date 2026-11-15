@@ -136,6 +136,92 @@ export function parseAnalysis(raw: unknown, corpusNorm: string): Analysis | null
 
 export const hasMatchableEvidence = (a: Analysis): boolean => a.experience_areas.length + a.tools_and_workflows.length + a.product_domains.length > 0;
 
+// ---------------------------------------------------------------------------------------------------------------------
+// Evidence strength and explanation grounding (policy 3)
+// ---------------------------------------------------------------------------------------------------------------------
+
+/**
+ * Concise skills / tools that are meaningful on their own ("SQL", "Docker", "React"). A single such word is real evidence; a single
+ * ordinary word ("Steam", "games", "apps") is not: it needs supporting context. All-caps acronyms of 2-6 letters (SQL, CRM, SEO, API)
+ * count as well. The list only needs to hold well-known names that are NOT all-caps; anything else must come with context.
+ */
+const TECH_TERMS = new Set((
+  'sql postgres postgresql mysql sqlite mongodb redis docker kubernetes terraform ansible linux bash powershell git github gitlab python java javascript typescript ' +
+  'react vue angular svelte nextjs node nodejs django flask fastapi rails laravel spring golang rust kotlin swift php ruby scala dart flutter ' +
+  'aws azure gcp firebase supabase graphql grpc kafka nginx jenkins postman jira figma sketch photoshop illustrator blender unity unreal excel notion airtable ' +
+  'zapier shopify wordpress salesforce hubspot quickbooks xero tableau looker pandas numpy pytorch tensorflow selenium cypress playwright pytest jest webpack vite c# c++ .net').split(' '));
+
+/** Words that add no context to a quote ("Steam daily", "use Steam"): they do not count as supporting context. */
+const FILLER = new Set(
+  'use used using uses every day days daily often really lot lots bit little thing things stuff regularly always also like love usually sometimes'.split(' '));
+
+/** Content tokens of a quote, lower-cased, with the original casing kept to recognise acronyms. */
+function contentTokens(quote: string): Array<{ t: string; acronym: boolean }> {
+  const out: Array<{ t: string; acronym: boolean }> = [];
+  for (const raw of quote.split(/[^\p{L}\p{N}+#]+/u)) {
+    if (!raw) continue;
+    const t = raw.toLowerCase();
+    if (STOPWORDS.has(t) || FILLER.has(t)) continue;
+    const acronym = raw.length >= 2 && raw.length <= 6 && raw === raw.toUpperCase() && /\p{L}/u.test(raw);
+    if (t.length >= 3 || /\d/.test(t) || acronym) out.push({ t, acronym });
+  }
+  return out;
+}
+
+export type EvidenceStrength = 'context' | 'tech' | 'isolated';
+
+/**
+ * context  = two or more meaningful words (a phrase that says something: "I built a REST API", "Excel for invoices")
+ * tech     = ONE word, but a concise technical skill/tool or an acronym (SQL, Docker, React, CRM)
+ * isolated = one ordinary word ("Steam", "games"): not sufficient evidence on its own
+ */
+export function evidenceStrength(quote: string): EvidenceStrength {
+  const toks = contentTokens(quote);
+  if (toks.length >= 2) return 'context';
+  if (toks.length === 1 && (TECH_TERMS.has(toks[0].t) || toks[0].acronym)) return 'tech';
+  return 'isolated';
+}
+const POINTS: Record<EvidenceStrength, number> = { context: 2, tech: 1, isolated: 0 };
+
+// Generic vocabulary that appears in almost every explanation and says nothing about WHO supplied it.
+const EXPLANATION_NEUTRAL = new Set(
+  ('report reports reported experience experiences tester testing test tests task tasks product products relevant relevance match matches matching direct directly ' +
+   'hands-on hands closely clearly specific using used works work workflow tool tools app apps people user users help useful good strong fits fit').split(' '));
+const stem = (t: string): string => (t.length > 5 ? t.slice(0, 5) : t);
+const stems = (s: string): Set<string> => new Set(contentTokens(s).map((x) => x.t).filter((t) => t.length >= 4 && !EXPLANATION_NEUTRAL.has(t)).map(stem));
+
+/**
+ * Is this explanation about the TESTER'S reported experience, rather than a paraphrase of the campaign?
+ *  1. it shares at least one meaningful word with the evidence quotes (what the tester actually wrote);
+ *  2. a named technical term appears in it only if the tester's own text contains it (a tool that only the campaign mentions
+ *     cannot be credited to the tester);
+ *  3. it is not mostly words that occur only in the campaign text (more than twice as many campaign-only words as tester words).
+ * `testerCorpusNorm` = normalised quotes of the validated analysis; `campaignText` = name + description + task.
+ */
+export function explanationGrounded(explanation: string, evidenceQuotes: readonly string[], testerCorpusNorm: string, campaignText: string): boolean {
+  const exp = stems(explanation);
+  const ev = stems(evidenceQuotes.join(' '));
+  if (![...exp].some((x) => ev.has(x))) return false;
+  const tester = stems(testerCorpusNorm);
+  const campaign = stems(campaignText);
+  const testerNorm = testerCorpusNorm;
+  for (const tk of contentTokens(explanation)) {
+    if (TECH_TERMS.has(tk.t) && campaignText.toLowerCase().includes(tk.t) && !containsAtWordBoundary(testerNorm, tk.t)) return false;
+  }
+  let a = 0;
+  let b = 0;
+  for (const x of exp) {
+    if (tester.has(x)) a++;
+    else if (campaign.has(x)) b++;
+  }
+  return !(b > 2 * a);
+}
+
+/** Deterministic, safe explanation used when the model's own text is not grounded in what the tester wrote. */
+function fallbackExplanation(quote: string): string {
+  return safeText(`You wrote: "${quote}". That is the part of your own reported experience that relates to what this task needs.`, LIMITS.explanationChars);
+}
+
 const NONE: MatchResult = { verdict: 'none', recommended: false, explanation: '', evidence: [], unsupported_requirements: [] };
 
 /**
@@ -146,7 +232,7 @@ const NONE: MatchResult = { verdict: 'none', recommended: false, explanation: ''
  * "evidence". A batch where many campaigns are genuinely relevant is NOT penalised; steering text in a campaign is stopped
  * earlier by guard.ts (such campaigns are never sent to the model).
  */
-export function parseMatches(raw: unknown, refs: readonly string[], quoteCorpusNorm: string): Map<string, MatchResult> | null {
+export function parseMatches(raw: unknown, refs: readonly string[], quoteCorpusNorm: string, campaignTexts?: ReadonlyMap<string, string>): Map<string, MatchResult> | null {
   if (!isRecord(raw) || !Array.isArray(raw.matches)) return null;
   const wanted = new Set(refs);
   const seen = new Set<string>();
@@ -167,15 +253,25 @@ export function parseMatches(raw: unknown, refs: readonly string[], quoteCorpusN
         if (!isRecord(e)) continue;
         const quote = groundedQuote(e.quote, quoteCorpusNorm);
         const relevance = safeText(e.relevance, LIMITS.relevanceChars);
-        if (quote && relevance) evidence.push({ quote, relevance });
+        // One isolated ordinary word ("Steam") is not evidence by itself; a concise skill ("SQL", "Docker") or a phrase is.
+        if (quote && relevance && evidenceStrength(quote) !== 'isolated') evidence.push({ quote, relevance });
         if (evidence.length === 3) break;
       }
     }
-    const explanation = safeText(m.explanation, LIMITS.explanationChars);
+    let explanation = safeText(m.explanation, LIMITS.explanationChars);
 
     const recommended = (verdict === 'strong' || verdict === 'good') && evidence.length > 0 && explanation.length >= 10;
+    if (recommended) {
+      // The explanation must be about the TESTER's reported experience; otherwise a safe sentence built from their own quote is shown.
+      const best = evidence.find((x) => evidenceStrength(x.quote) === 'context') ?? evidence[0];
+      const campaignText = campaignTexts?.get(m.ref);
+      if (campaignText !== undefined && !explanationGrounded(explanation, evidence.map((x) => x.quote), quoteCorpusNorm, campaignText)) explanation = fallbackExplanation(best.quote);
+      // "strong" needs real weight: a phrase (2 points) or two concise skills (1 + 1). A single skill name alone is only "good".
+    }
+    const weight = evidence.reduce((n, x) => n + POINTS[evidenceStrength(x.quote)], 0);
+    const finalVerdict: Verdict = verdict === 'strong' && weight < 2 ? 'good' : verdict;
     out.set(m.ref, recommended
-      ? { verdict, recommended: true, explanation, evidence, unsupported_requirements: unsupported }
+      ? { verdict: finalVerdict, recommended: true, explanation, evidence, unsupported_requirements: unsupported }
       // A claimed strong/good without grounded evidence is NOT downgraded to a softer-but-shown verdict: it is dropped.
       : { ...NONE, verdict: verdict === 'strong' || verdict === 'good' ? 'none' : verdict, unsupported_requirements: [] });
   }

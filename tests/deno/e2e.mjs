@@ -112,7 +112,7 @@ function scripted(name, userText) {
       const fam = Object.entries(FAMILIES).filter(([, re]) => re.test(`${c.name} ${c.description} ${c.task}`)).map(([l]) => l);
       const hit = analysis.experience_areas.find((a) => fam.includes(a.label));
       if (!hit) return { ref: c.ref, verdict: 'none', explanation: '', evidence: [], unsupported_requirements: [] };
-      return { ref: c.ref, verdict: 'good', explanation: 'You report hands-on work that this product depends on.', evidence: [{ quote: hit.evidence[0], relevance: 'Directly relevant reported experience.' }], unsupported_requirements: [] };
+      return { ref: c.ref, verdict: 'good', explanation: 'You report hands-on work that this product depends on.', evidence: [{ quote: [...hit.evidence].sort((x, y) => y.length - x.length)[0], relevance: 'Directly relevant reported experience.' }], unsupported_requirements: [] };
     }) };
   }
   if (name === 'professional_assessment') {
@@ -279,7 +279,7 @@ let C1, C2, C3, A1, B1;
   ok(r3.json.status === 'ok' && oaCount() === before + 2, 'a changed answer (new etag) invalidates the cache: analysis and verdicts are recomputed');
   // secrets hygiene
   const bodies = [r0.text, r1.text, r2.text, rb.text, r3.text].join('\n');
-  ok(!bodies.includes(SERVICE_KEY) && !bodies.includes(OPENAI_KEY) && !bodies.includes(subjA) && !/Postman|Flask/.test(bodies.replace(/"quote":"[^"]*"/g, '')), 'responses never contain keys, the subject_ref, or the tester\'s text outside the verbatim evidence quotes');
+  ok(!bodies.includes(SERVICE_KEY) && !bodies.includes(OPENAI_KEY) && !bodies.includes(subjA) && !/Postman|Flask/.test(bodies.replace(/"quote":"[^"]*"/g, '').replace(/You wrote: \\"[^"]*\\"/g, '')), 'responses never contain keys, the subject_ref, or the tester\'s text outside the verbatim evidence quotes (the grounded-explanation fallback quotes their own words back)');
   const log = fn.logs.stderr + fn.logs.stdout;
   ok(!log.includes(OPENAI_KEY) && !log.includes(SERVICE_KEY) && !/Flask|Postman|Second-year/.test(log) && !uuidRe.test(log), 'the function log contains no keys, no tester text and no ids');
 }

@@ -163,7 +163,8 @@ export async function recommend(deps: Deps): Promise<RecommendResponse> {
         schema: MATCH_SCHEMA as unknown as Record<string, unknown>, maxOutputTokens: LIMITS.maxOutputTokensMatch,
       });
       spent.input_tokens += res.usage.input_tokens; spent.output_tokens += res.usage.output_tokens;
-      const parsed = parseMatches(res.json, refs, analysisQuoteCorpus(analysis));
+      const texts = new Map(missing.map((c) => [c.model.ref, `${c.model.name} ${c.model.description} ${c.model.task}`] as const));
+      const parsed = parseMatches(res.json, refs, analysisQuoteCorpus(analysis), texts);
       if (!parsed) { deps.log?.('matches_malformed'); await track(); return build('unavailable', false); }
       for (const c of missing) {
         fresh.push({ campaign_id: c.row.campaign_id, profile_hash: profileHash, campaign_hash: c.hash, result: parsed.get(c.model.ref) ?? NO_MATCH });

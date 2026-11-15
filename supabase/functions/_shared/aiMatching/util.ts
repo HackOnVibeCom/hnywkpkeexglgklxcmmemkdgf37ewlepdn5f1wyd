@@ -1,7 +1,7 @@
 // Small pure helpers: hashing, text normalisation, bounds. No I/O.
 
 /** Bump whenever prompts, schemas or validation rules change: it is part of every cache key, so old verdicts expire. */
-export const POLICY_VERSION = 2;
+export const POLICY_VERSION = 3; // 3: evidence-strength and explanation-grounding rules (validate.ts)
 
 export const LIMITS = {
   bioChars: 280,

@@ -7,7 +7,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { recommend } from '../../supabase/functions/_shared/aiMatching/engine.ts';
 import { buildProfile } from '../../supabase/functions/_shared/aiMatching/profile.ts';
-import { groundedQuote, hasContentWord, parseAnalysis, parseMatches, safeText } from '../../supabase/functions/_shared/aiMatching/validate.ts';
+import { evidenceStrength, explanationGrounded, groundedQuote, hasContentWord, parseAnalysis, parseMatches, safeText } from '../../supabase/functions/_shared/aiMatching/validate.ts';
 import { createOpenAiCaller, AiError } from '../../supabase/functions/_shared/aiMatching/openai.ts';
 import { createHandler } from '../../supabase/functions/_shared/aiMatching/handler.ts';
 import { CATEGORY_LABELS } from '../../supabase/functions/_shared/aiMatching/categories.ts';
@@ -62,7 +62,7 @@ function stubModel({ obeyInjection = false } = {}) {
       const fam = Object.entries(FAMILIES).filter(([, re]) => re.test(text)).map(([l]) => l);
       const hit = analysis.experience_areas.find((a) => fam.includes(a.label));
       if (!hit) return { ref: c.ref, verdict: 'none', explanation: '', evidence: [], unsupported_requirements: [] };
-      return { ref: c.ref, verdict: hit.evidence.length > 1 ? 'strong' : 'good', explanation: 'You report hands-on work that this product depends on.', evidence: [{ quote: hit.evidence[0], relevance: 'Directly relevant reported experience.' }], unsupported_requirements: [] };
+      return { ref: c.ref, verdict: hit.evidence.length > 1 ? 'strong' : 'good', explanation: 'You report hands-on work that this product depends on.', evidence: [{ quote: [...hit.evidence].sort((x, y) => y.length - x.length)[0], relevance: 'Directly relevant reported experience.' }], unsupported_requirements: [] };
     });
     return { json: { matches }, usage };
   };
@@ -619,7 +619,51 @@ console.log('\n\n[quality gates the product asked for: no stereotyping, no unrel
   ok(roff.status === 'consent_required' && off.feed.length === 2 && off.model.log.length === 0, 'G: without consent there are no recommendations, nothing is sent, and the server-side feed itself is untouched');
 }
 
-console.log('\n\n[contracts: untouched money/eligibility logic and the exact database surface]');
+console.log('\n[evidence strength and explanation grounding (policy 3)]');
+{
+  // an isolated ordinary word is not evidence; a concise skill or a phrase is
+  ok(['Steam', 'Steam daily', 'games', 'apps', 'I use Steam'].every((q) => evidenceStrength(q) === 'isolated'), 'one ordinary word ("Steam", "games", "apps", "Steam daily") is isolated: not sufficient on its own');
+  ok(['SQL', 'Docker', 'React', 'Python', 'CRM', 'Figma', 'Kubernetes', 'TypeScript'].every((q) => evidenceStrength(q) === 'tech'), 'concise technical skills and acronyms (SQL, Docker, React, Python, CRM ...) are meaningful on their own');
+  ok(['I built a REST API', 'Excel for invoices', 'I play on a console and a PC', 'git and Python'].every((q) => evidenceStrength(q) === 'context'), 'phrases that say what the tester did or used are context');
+
+  const corpus = normForQuote(['I play on a console and a PC', 'Steam', 'SQL', 'Docker', 'React', 'I built a REST API for my university league', 'Excel for invoices and budgets', 'I use Python daily'].join('\n'));
+  const mk = (verdict, quotes, explanation) => parseMatches({ matches: [{ ref: 'c1', verdict, explanation, evidence: quotes.map((q) => ({ quote: q, relevance: 'Relevant to this task.' })), unsupported_requirements: [] }] }, ['c1'], corpus).get('c1');
+  const E = 'You reported playing on a console and a PC, which fits a game launcher.';
+  const lone = mk('good', ['Steam'], E);
+  ok(lone.recommended === false && lone.verdict === 'none', 'a recommendation whose sole evidence is "Steam" is not made');
+  const withCtx = mk('good', ['Steam', 'I play on a console and a PC'], E);
+  ok(withCtx.recommended && withCtx.evidence.length === 1 && withCtx.evidence[0].quote === 'I play on a console and a PC', 'with a supporting phrase the recommendation stands, and the isolated word is not shown as evidence');
+  const strongSql = mk('strong', ['SQL', 'Docker'], 'You reported using SQL and Docker, which this database tool relies on.');
+  ok(strongSql.recommended && strongSql.verdict === 'strong' && strongSql.evidence.length === 2, 'a genuinely strong match on concise skills (SQL + Docker) is preserved as strong');
+  const goodSql = mk('good', ['SQL'], 'You reported SQL, which this reporting tool relies on.');
+  ok(goodSql.recommended && goodSql.verdict === 'good', 'a single concise skill (SQL) is accepted as evidence for a good match');
+  const react1 = mk('strong', ['React'], 'You reported React, which this front-end tool is built with.');
+  ok(react1.recommended && react1.verdict === 'good', 'a single skill name alone cannot make a STRONG match: it is shown as good');
+  const phrase = mk('strong', ['I built a REST API for my university league'], 'You reported building a REST API for your league, directly relevant to API testing.');
+  ok(phrase.recommended && phrase.verdict === 'strong', 'one concrete phrase of hands-on work supports a strong match');
+
+  // explanations must be about the tester's experience, not the campaign
+  const campText = 'InvoiceEase Invoicing and expense tracking for small offices. Create an invoice for a client, mark it paid and export a monthly summary.';
+  ok(explanationGrounded('You use Excel for invoices and budgets, so this invoicing app fits your daily work.', ['Excel for invoices and budgets'], corpus, campText), 'an explanation that builds on the tester\'s own words is grounded');
+  ok(!explanationGrounded('Invoicing and expense tracking for small offices, creating invoices and exporting a monthly summary.', ['Excel for invoices and budgets'], corpus, campText), 'an explanation that mostly restates the campaign description is NOT grounded');
+  ok(!explanationGrounded('This product is great and very popular with many people.', ['Excel for invoices and budgets'], corpus, campText), 'an explanation that shares nothing with the tester\'s evidence is NOT grounded');
+  ok(!explanationGrounded('You use GraphQL and Python every day.', ['I use Python daily'], corpus, 'A GraphQL client for exploring APIs with Python scripts.'), 'a tool that only the campaign names cannot be credited to the tester');
+  ok(explanationGrounded('You use Python daily, which suits this scripting-heavy tool.', ['I use Python daily'], corpus, 'A GraphQL client for exploring APIs with Python scripts.'), 'but a tool the tester DID name can be mentioned');
+
+  // end to end through the engine: a campaign-paraphrasing explanation is replaced by a safe sentence built from the tester's own quote
+  const parrot = userWorld({
+    bio: '', categories: ['tech_savvy'], answers: { tech_savvy: { 1: 'I use git and Python every day.', 2: 'I built a Flask API for inventory.' } }, feed: [camp(DEV)],
+    model: async (req) => { const r = await stubModel()(req); if (req.name === 'campaign_matches') for (const m of r.json.matches) if (m.verdict !== 'none') m.explanation = 'A developer tool for testing REST API endpoints with Python and git integration.'; return r; },
+  });
+  const rp = await recommend(parrot.deps);
+  ok(rp.items.length === 1 && /^You wrote: "/.test(rp.items[0].reason) && /Flask API|git and Python/.test(rp.items[0].reason), 'engine: the campaign-paraphrasing explanation is replaced by "You wrote: <their own words>"', rp.items[0]?.reason);
+  const honestRun = userWorld({ bio: '', categories: ['tech_savvy'], answers: { tech_savvy: { 1: 'I use git and Python every day.', 2: 'I built a Flask API for inventory.' } }, feed: [camp(DEV)],
+    model: async (req) => { const r = await stubModel()(req); if (req.name === 'campaign_matches') for (const m of r.json.matches) if (m.verdict !== 'none') m.explanation = 'You reported building a Flask API for inventory and using git and Python daily.'; return r; } });
+  const rh = await recommend(honestRun.deps);
+  ok(rh.items.length === 1 && /^You reported building a Flask API/.test(rh.items[0].reason), 'engine: a grounded explanation is kept as the model wrote it');
+}
+
+console.log('\n[contracts: untouched money/eligibility logic and the exact database surface]');
 {
   ok(Object.keys(CATEGORY_LABELS).length === 5, 'five category labels');
   const dir = 'supabase/functions/_shared/aiMatching';

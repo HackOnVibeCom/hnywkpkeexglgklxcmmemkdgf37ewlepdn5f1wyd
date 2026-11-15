@@ -48,7 +48,7 @@ function scripted(name, userText) {
       const fam = Object.entries(FAMILIES).filter(([, re]) => re.test(`${c.name} ${c.description} ${c.task}`)).map(([k]) => FAMILY_LABEL[k]);
       const hit = analysis.experience_areas.find((a) => fam.includes(a.label));
       if (!hit) return { ref: c.ref, verdict: 'none', explanation: '', evidence: [], unsupported_requirements: [] };
-      return { ref: c.ref, verdict: 'good', explanation: 'You report hands-on work that this product depends on.', evidence: [{ quote: hit.evidence[0], relevance: 'Directly relevant reported experience.' }], unsupported_requirements: [] };
+      return { ref: c.ref, verdict: 'good', explanation: 'You report hands-on work that this product depends on.', evidence: [{ quote: [...hit.evidence].sort((x, y) => y.length - x.length)[0], relevance: 'Directly relevant reported experience.' }], unsupported_requirements: [] };
     }) };
   }
   if (name === 'professional_assessment') {
