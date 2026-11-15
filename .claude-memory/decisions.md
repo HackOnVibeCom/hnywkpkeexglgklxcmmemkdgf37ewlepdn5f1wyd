@@ -65,3 +65,9 @@ Status: prepared, not committed - waits for the final product name; if the name 
 Decision: user-facing name, tagline ("Give feedback. Get feedback."), metadata, favicon and docs become UXBarter; every identifier that infrastructure or stored data depends on keeps "peerprobe" (see README -> Naming for the list and reasons).
 Reason: the Vercel URL is the Turnstile-allowed hostname and the live deployment; migrations 1-5 are applied and immutable; browser storage keys would drop stored invitations/drafts; renaming the GitHub branch/Vercel project would break links and history for no user benefit.
 Consequence: og:url/canonical use peerprobe.vercel.app until a custom domain is added (then update index.html, the Turnstile hostnames and Supabase Site URL together). Do not claim traction/revenue/testimonials anywhere.
+
+## ADR-014 - Primary host uxbarter.vercel.app on the existing project; old host stays
+Decision: attach uxbarter.vercel.app to the existing Vercel project (no rename, no new project) and make it the canonical/og/twitter host; keep peerprobe.vercel.app attached as a working secondary domain (no redirect). Both hostnames live in the Turnstile widget.
+Reason: renaming the project gives no guarantee about the old *.vercel.app URL; adding a domain is reversible and keeps env vars, project id and history. Doing it before public launch means no real anonymous sessions are stranded (sessions are per-origin).
+Rejected: renaming the Vercel project (old URL not guaranteed); redirecting the old host now (would reset anonymous identity for anyone on it).
+Consequence: supersedes the host note in ADR-013. Supabase Site URL still points at the old host until separately changed. Site-wide WAF Challenge is deferred until after judging (link-preview bots, judges' tools and JS-less clients would be blocked).

@@ -2,7 +2,7 @@
 
 Peer-to-peer human usability-testing credit exchange (HackOnVibe MVP). Read `.claude-memory/` first; it holds decisions and current state. `README.md` has setup.
 
-**Naming:** the product is **UXBarter** (tagline "Give feedback. Get feedback."); always write it with that capitalization in anything user-facing. Infrastructure keeps the old name on purpose and must NOT be renamed: Vercel project/URL `peerprobe` / https://peerprobe.vercel.app (also the Turnstile hostname), branch `feat/peerprobe-mvp`, Supabase project/objects/migrations, `PEERPROBE_*` test env vars, package names, `pp:*` storage keys. See README → Naming.
+**Naming:** the product is **UXBarter** (tagline "Give feedback. Get feedback."); always write it with that capitalization in anything user-facing. Infrastructure keeps the old name on purpose and must NOT be renamed: Vercel project `peerprobe` and the secondary URL https://peerprobe.vercel.app (still a working domain and a Turnstile hostname; the primary URL is https://uxbarter.vercel.app), branch `feat/peerprobe-mvp`, Supabase project/objects/migrations, `PEERPROBE_*` test env vars, package names, `pp:*` storage keys. See README → Naming.
 
 ## Commands
 - `npm run dev` / `npm run typecheck` / `npm run build` (the HackOnVibe workflow would build on **Node 20**; Vercel project uses Node 24.x; both must stay clean)
@@ -11,7 +11,7 @@ Peer-to-peer human usability-testing credit exchange (HackOnVibe MVP). Read `.cl
 - `npm run test:browser` — real Chrome vs a **stubbed** API (builds the app twice into a temp dir)
 - `PEERPROBE_LIVE_TESTS=1 node tests/live/live-e2e.mjs` — writes to the REAL Supabase project in `.env.local` and only with the user's OK. Supabase CAPTCHA is now enforced, so new anonymous identities need a Turnstile token: these scripts cannot run unattended any more.
 - `node tests/browser/csp-check.mjs` — enforces the CSP from `vercel.json` in real Chrome (stub API).
-- Hosting = Vercel (team `peer-probe`, project `peerprobe`, https://peerprobe.vercel.app). `vercel.json` holds build/rewrite/headers/CSP-Report-Only. Deploys are CLI-only and need the user's approval; **a Vercel project's FIRST deployment becomes Production automatically**.
+- Hosting = Vercel (team `peer-probe`, project `peerprobe`, primary https://uxbarter.vercel.app, secondary https://peerprobe.vercel.app). `vercel.json` holds build/rewrite/headers/CSP-Report-Only. Deploys are CLI-only and need the user's approval; **a Vercel project's FIRST deployment becomes Production automatically**.
 
 ## Hard rules (from the user)
 - **No login wall, ever.** All core features work via Supabase Anonymous Auth, created silently.
@@ -25,7 +25,7 @@ Peer-to-peer human usability-testing credit exchange (HackOnVibe MVP). Read `.cl
 - **Migrations 1–3 are applied in production: never edit them.** Change the schema only with new migration files, rehearse with `supabase db push --dry-run --remote`; applying anything to the live DB needs explicit user approval.
 
 ## Gotchas
-- Vite inlines `VITE_*` at build time. On Vercel they are project env vars (Config type): `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` (Production + Preview) and `VITE_TURNSTILE_SITE_KEY` (Production only: the widget is bound to peerprobe.vercel.app). The HackOnVibe workflow cannot pass env vars and has no token for this repo.
+- Vite inlines `VITE_*` at build time. On Vercel they are project env vars (Config type): `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` (Production + Preview) and `VITE_TURNSTILE_SITE_KEY` (Production only: the widget is bound to uxbarter.vercel.app and peerprobe.vercel.app - both must stay in the widget). The HackOnVibe workflow cannot pass env vars and has no token for this repo.
 - Vercel CLI on Windows Git Bash: prefix with `MSYS_NO_PATHCONV=1` for paths like `/discover`; `vercel link` writes `VERCEL_OIDC_TOKEN` into `.env.local` (remove it); `vercel env rm` needs `--confirm-name`.
 - Cloudflare Turnstile code 600010 = Cloudflare refused the browser session (generic challenge failure), not a config error; see README → Turnstile troubleshooting.
 - Keep `@supabase/supabase-js` on the `~2.105` line: 2.110+ declare `node >=22`, CI uses Node 20.

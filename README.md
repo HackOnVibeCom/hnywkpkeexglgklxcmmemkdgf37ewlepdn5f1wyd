@@ -12,7 +12,7 @@ How it works — founders swap 2–3 minute tests of each other's products:
 
 **No registration, email, password or OAuth — ever.** Identity is a Supabase *Anonymous Auth* user created silently on first visit.
 
-> Built for HackOnVibe. **Live site: <https://peerprobe.vercel.app>** — a static Vite build on Vercel, backend on Supabase, human check by Cloudflare Turnstile (see [Hosting on Vercel](#hosting-on-vercel-public-site)).
+> Built for HackOnVibe. **Live site: <https://uxbarter.vercel.app>** (the original hostname <https://peerprobe.vercel.app> still serves the same deployment) — a static Vite build on Vercel, backend on Supabase, human check by Cloudflare Turnstile (see [Hosting on Vercel](#hosting-on-vercel-public-site)).
 
 ## Stack
 
@@ -35,7 +35,7 @@ No SSR, Node server, WebRTC or PeerJS.
 | **Phase 2: referrals, sharing, Turnstile** | Live (migration 5 + frontend): referral links (3 rewarded referrals max), invite cards, a results card built in the browser, and Cloudflare Turnstile with Supabase CAPTCHA **enforced** (sign-ups without a valid token are rejected with HTTP 400). |
 | Automated tests | `npm run test:db` (PGlite: 119 core + 118 lifecycle + 91 referral + 31 upgrade-rehearsal assertions), `npm run test:browser` (real Chrome, stubbed API: 58 + 77 + 62 checks), `tests/browser/csp-check.mjs` (CSP policy under real Chrome). Real-project scripts in `tests/live/` are opt-in and, with CAPTCHA now enforced, need a token path (e.g. a temporary CAPTCHA pause). |
 | 5 screens (landing, discover, create, test, dashboard) | Implemented and typechecked; layouts checked at 360, 390, 768 and 1280 px. |
-| Deployed site | <https://peerprobe.vercel.app> (Vercel Production). Security headers are set in `vercel.json`; a Content-Security-Policy is configured in **Report-Only** mode (see [Known limitations](#known-limitations-honest-list)). |
+| Deployed site | <https://uxbarter.vercel.app> (Vercel Production; the original <https://peerprobe.vercel.app> stays attached as a secondary domain). Security headers are set in `vercel.json`; a Content-Security-Policy is configured in **Report-Only** mode (see [Known limitations](#known-limitations-honest-list)). |
 | AI summary of recurring problems | Not implemented (dashboard says so). |
 | Public proof pages | Not built, by design: the results card is generated in the browser and shared by the founder; there is no public endpoint. |
 
@@ -208,7 +208,7 @@ The product was renamed from PeerProbe to **UXBarter** just before the HackOnVib
 
 | Kept as `peerprobe` | Why |
 |---|---|
-| Vercel project `peerprobe` and the URL `https://peerprobe.vercel.app` | It is the existing production deployment and the only hostname the Cloudflare Turnstile widget allows; `og:url`, `canonical` and the image URLs in `index.html` use it |
+| Vercel project `peerprobe` and the secondary URL `https://peerprobe.vercel.app` | One project serves both hostnames. The old host stays attached (and in the Turnstile widget) so existing links keep working; `og:url`, `canonical` and the image URLs in `index.html` use the primary `https://uxbarter.vercel.app` |
 | GitHub branch `feat/peerprobe-mvp` and the Vercel team slug | Existing remote history and settings |
 | Supabase project, tables, RPC names, migration files (including their first-line comments) | Migrations 1–5 are applied to production and must not be edited |
 | `PEERPROBE_LIVE_TESTS`, `PEERPROBE_URL`, `PEERPROBE_KEY` environment variables | Internal test switches |
@@ -216,6 +216,8 @@ The product was renamed from PeerProbe to **UXBarter** just before the HackOnVib
 | Browser storage keys `pp:ref`, `pp:draft:*` | Renaming would silently drop visitors' stored invitations and unsent drafts |
 
 Old commits, the project memory history and the deployment notes also keep the old name.
+
+**Domains.** Primary: <https://uxbarter.vercel.app>. Secondary: <https://peerprobe.vercel.app>, the same project and deployment (not a redirect). Both hostnames must be listed in the Cloudflare Turnstile widget, otherwise the widget fails with `110200`. Anonymous sessions and stored invite codes live in browser storage **per hostname**: a visitor who used one host starts a fresh anonymous identity (and a new starting credit) on the other, so do not turn the old host into a redirect after launch without deciding that consciously. The Supabase Auth *Site URL* is not used by anonymous sign-in and is still `https://peerprobe.vercel.app` until it is changed in a separate step. Invite and share links are built from `window.location.origin`, so they carry whichever host the visitor is on.
 
 ## Repository layout
 
