@@ -64,38 +64,53 @@ export interface CampaignEligibility {
   own_campaign: boolean;
 }
 
-export interface ScreeningQuestion {
-  id: string;
-  prompt: string;
-  options: { id: string; label: string }[];
+/**
+ * Experience profile (migration 8). Four open-ended answers per category; states are computed by the database:
+ *   inactive            not in my profile
+ *   incomplete          in my profile, the four answers for the CURRENT question version are missing / outdated
+ *   active              general category: answers complete; professional: answers complete AND a valid qualification decision
+ *   pending_assessment  professional, answers complete, waiting for the assessment (needs AI consent)
+ *   not_qualified       professional, a decision of "not qualified" for exactly these answers (editing them reopens it)
+ */
+export type ExperienceState = 'inactive' | 'incomplete' | 'active' | 'pending_assessment' | 'not_qualified';
+
+export interface ExperienceCategory {
+  category: string;
+  /** true for the three professional categories */
+  requires_assessment: boolean;
+  selected: boolean;
+  state: ExperienceState;
+  /** not_selected | answers_needed | questions_changed | consent_required | awaiting_assessment | not_qualified | active */
+  reason: string;
+  question_version: number;
+  answers_version: number | null;
+  answers_complete: boolean;
+  answers_updated_at: string | null;
+  /** the VALID decision, if any (never present for general categories) */
+  qualification: { status: 'qualified' | 'not_qualified'; source: 'ai_assessment'; decided_at: string } | null;
 }
 
-export interface Screening {
+export interface MyExperience {
+  has_profile: boolean;
+  /** at least one selected category has its four answers: required to reserve ANY task */
+  participation_ready: boolean;
+  ai_consent: { granted: boolean; policy_version: number; updated_at: string | null };
+  categories: ExperienceCategory[];
+  active_categories: string[];
+}
+
+export interface ExperienceQuestions {
   category: string;
   version: number;
-  /** How many of the question areas must report hands-on experience. */
-  min_areas: number;
-  qualified: boolean;
-  max_attempts: number;
-  attempts_left: number;
-  questions: ScreeningQuestion[];
-}
-
-export interface ScreeningResult {
-  passed: boolean;
-  areas: number;
-  min_areas: number;
-  version: number;
-  attempts_left: number;
-}
-
-export interface ScreeningStatus {
-  category: string;
-  version: number;
-  qualified: boolean;
-  qualified_at: string | null;
-  attempts_left: number;
-  next_attempt_at: string | null;
+  requires_assessment: boolean;
+  questions: { id: string; prompt: string; hint: string | null }[];
+  /** MY stored answers (owner only), or null */
+  answers: Record<string, string> | null;
+  answers_version: number | null;
+  /** my answers belong to an older question version: please review and save again */
+  outdated: boolean;
+  updated_at: string | null;
+  saves_left: number;
 }
 
 /** My OPTIONAL tester profile. Private: no other identity can read it. */

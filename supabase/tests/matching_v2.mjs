@@ -4,7 +4,7 @@
 
 import { createHarness, uid } from './harness.mjs';
 
-const { db, as, q, ok, failsWith, fails, counts } = await createHarness({ quiet: true });
+const { db, as, q, ok, failsWith, fails, counts } = await createHarness({ quiet: true, upTo: '20261115000200_matching_v2.sql' });
 
 const TASK = 'Find the pricing page and tell me which plan you would pick.';
 const FB = { friction: 'The pricing link was hidden in the footer.', suggestion: 'Add a pricing link to the top nav.' };
@@ -344,7 +344,7 @@ console.log('\n[in-progress tests survive profile edits; the database trigger is
 }
 
 console.log('\n[Discover v2: Recommended / Eligible / Not Eligible]');
-const h2 = await createHarness({ quiet: true });
+const h2 = await createHarness({ quiet: true, upTo: '20261115000200_matching_v2.sql' });
 {
   const { db: d2, as: as2, q: q2, ok: ok2 } = h2;
   let n2 = 1;

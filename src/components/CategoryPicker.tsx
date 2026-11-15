@@ -1,5 +1,5 @@
 import { useId, type ReactNode } from 'react';
-import { CATEGORIES, normalizeCategories } from '../lib/matching';
+import { CATEGORIES, normalizeCategories, type ExperienceBadge } from '../lib/matching';
 
 interface Props {
   legend: string;
@@ -9,10 +9,12 @@ interface Props {
   disabled?: boolean;
   /** Prefix for data-testid on each option (…-tech_savvy). */
   testIdPrefix?: string;
+  /** Optional status per category id (Active / Pending …), shown under the description. */
+  badges?: Record<string, ExperienceBadge | null | undefined>;
 }
 
 /** Multi-select of the five tester categories: native checkboxes in a fieldset (keyboard + screen-reader friendly). */
-export function CategoryPicker({ legend, hint, value, onChange, disabled, testIdPrefix = 'cat' }: Props) {
+export function CategoryPicker({ legend, hint, value, onChange, disabled, testIdPrefix = 'cat', badges }: Props) {
   const hintId = useId();
   const selected = new Set(value);
   const toggle = (id: string) => {
@@ -49,6 +51,17 @@ export function CategoryPicker({ legend, hint, value, onChange, disabled, testId
               <span className="min-w-0">
                 <span className="block font-semibold text-slate-900">{c.label}</span>
                 <span className="mt-0.5 block text-xs text-slate-600">{c.blurb}</span>
+                {badges?.[c.id] && (
+                  <span
+                    data-testid={`${testIdPrefix}-badge-${c.id}`}
+                    data-kind={badges[c.id]!.kind}
+                    className={`mt-1.5 inline-block rounded-full border px-2 py-0.5 text-xs font-semibold ${
+                      badges[c.id]!.kind === 'active' ? 'border-emerald-300 bg-emerald-50 text-emerald-900' : badges[c.id]!.kind === 'pending' ? 'border-amber-300 bg-amber-50 text-amber-900' : badges[c.id]!.kind === 'warn' ? 'border-red-200 bg-red-50 text-red-900' : 'border-slate-300 bg-slate-50 text-slate-800'
+                    }`}
+                  >
+                    {badges[c.id]!.text}
+                  </span>
+                )}
               </span>
             </label>
           );

@@ -5,7 +5,7 @@
 
 import { createHarness } from './harness.mjs';
 
-const { db, as, q, ok, fails, failsWith, summary } = await createHarness();
+const { db, as, q, ok, fails, failsWith, summary } = await createHarness({ autoReady: true });
 
 const A = '00000000-0000-0000-0000-00000000000a';
 const B = '00000000-0000-0000-0000-00000000000b';

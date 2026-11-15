@@ -29,14 +29,14 @@ export function EligibilityPanel({ elig }: { elig: CampaignEligibility }) {
       <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-amber-800">Required (at least one)</p>
       <CategoryBadges ids={elig.required_categories} highlight={elig.overlap} className="mt-1.5" />
       <div className="mt-4 flex flex-wrap gap-2">
-        {ex.action === 'screening' && ex.screeningCategory && (
-          <ButtonLink to={`/profile?screening=${ex.screeningCategory}`} data-testid="take-screening">
-            Take the screening
+        {ex.action === 'answers' && ex.answersCategory && (
+          <ButtonLink to={`/profile?answers=${ex.answersCategory}`} data-testid="answer-questions">
+            Answer the questions
           </ButtonLink>
         )}
         {ex.action === 'profile' && (
           <ButtonLink to="/profile" data-testid="edit-profile">
-            Edit tester profile
+            Complete my tester profile
           </ButtonLink>
         )}
         <ButtonLink to="/discover" variant="secondary">

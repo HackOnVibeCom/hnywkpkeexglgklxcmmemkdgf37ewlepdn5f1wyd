@@ -45,13 +45,13 @@ console.log('\n[V1] Request a test: Open vs Targeted testing');
   ok(await picker.isVisible() && /Open testing/.test(await picker.innerText()) && /Targeted testing/.test(await picker.innerText()), 'the page offers two explicit modes: Open testing and Targeted testing');
   const pt = await picker.innerText();
   ok(/Any eligible tester can take it/.test(pt) && /nobody is excluded/.test(pt), 'open mode is explained: any tester, nobody excluded');
-  ok(/Only testers who match at least one category/.test(pt) && /server enforces/.test(pt) && /self-reported screening/.test(pt) && /may take longer/.test(pt), 'targeted mode is explained: only matching testers, enforced by the server, screening for professional categories, may take longer');
+  ok(/Only testers who match at least one category/.test(pt) && /server enforces/.test(pt) && /assessment of their self-reported written experience/.test(pt) && /may take longer/.test(pt), 'targeted mode is explained: only matching testers, enforced by the server, professional categories are assessed from self-reported answers, may take longer');
   ok(await page.getByTestId('mode-open').locator('input').isChecked() && !(await page.getByTestId('mode-targeted').locator('input').isChecked()), 'Open testing is the default (existing behaviour)');
   ok(await page.getByRole('group', { name: 'Recommend it to (optional)' }).isVisible(), 'open mode: categories are an optional recommendation');
   await page.getByTestId('mode-targeted').locator('input').check();
   ok(await page.getByRole('group', { name: 'Required tester categories (choose at least one)' }).isVisible(), 'targeted mode: categories become REQUIRED');
   const hint = await bodyText(page);
-  ok(/at least one/.test(hint) && /not a verified credential/.test(hint) && /need no screening/.test(hint) && /credit is refunded/.test(hint), 'the targeted hint explains eligibility, that screening is self-reported / not a verified credential, which categories need none, and the refund');
+  ok(/at least one/.test(hint) && /not a verified credential/.test(hint) && /become active once their answers are saved/.test(hint) && /credit is refunded/.test(hint), 'the targeted hint explains eligibility, that the assessment is of self-reported answers / not a verified credential, which categories are active once answered, and the refund');
   // targeted without categories is stopped on the page and nothing is sent
   await fillBasics(page);
   await page.getByRole('button', { name: /Spend 1 credit/ }).click();
@@ -128,7 +128,7 @@ console.log('\n[V1] Request a test: Open vs Targeted testing');
 }
 
 // ───────────── Discover: Recommended / Eligible / Not eligible ─────────────
-console.log('\n[V2] Discover: Recommended, Eligible, Not eligible');
+console.log('\n[V2] Discover: matches, eligible, not available');
 {
   const rows = feed();
   const be = createBackend({ feed: rows, pages: pagesFor(rows), tester: tester(['students_learners']) });
@@ -136,12 +136,14 @@ console.log('\n[V2] Discover: Recommended, Eligible, Not eligible');
   await be.install(ctx);
   await page.goto(ENV + '/discover');
   await page.getByText('Beta open prefers students').waitFor();
+  await page.getByTestId('not-available').evaluate((el) => { el.open = true; });
   const order = await titles(page);
-  ok(JSON.stringify(order) === JSON.stringify(['Beta open prefers students', 'Gamma targeted students', 'Epsilon targeted tech+students', 'Alpha open plain', 'Zeta open prefers tech', 'Delta targeted tech']), 'order: recommended, then eligible, then not eligible (the server decides)', JSON.stringify(order));
-  ok((await page.getByTestId('recommended-badge').count()) === 3, 'three tasks are Recommended for you');
+  ok(JSON.stringify(order) === JSON.stringify(['Beta open prefers students', 'Gamma targeted students', 'Epsilon targeted tech+students', 'Alpha open plain', 'Zeta open prefers tech', 'Delta targeted tech']), 'order: matches, then eligible, then not available (the server decides)', JSON.stringify(order));
+  ok((await page.getByTestId('match-badge').count()) === 3, 'three tasks "Match your profile"');
   ok((await page.getByTestId('eligible-badge').count()) === 2, 'two are plainly Eligible (open tasks without overlap)');
   ok((await page.getByTestId('not-eligible-badge').count()) === 1 && /Not eligible: your profile does not match/.test(await page.getByTestId('not-eligible-badge').innerText()), 'one is Not eligible, with the reason on the badge');
   ok((await page.getByTestId('mode-badge').count()) === 6 && (await page.locator('[data-mode=targeted]').count()) === 3, 'every card says Open testing or Targeted testing');
+  ok((await page.getByTestId('eligible-list').locator(':scope > li').count()) === 5 && (await page.getByTestId('not-available').locator(':scope > ul > li').count()) === 1, 'five actionable tasks in "Browse all eligible tests", the sixth under "Not available to you yet"');
   const d = card(page, 'Delta targeted tech');
   ok((await d.getAttribute('data-fit')) === 'not_eligible', 'the not-eligible task is still LISTED (a tester may view it)');
   ok(/Why not: your tester profile does not include any of these categories/.test(await d.getByTestId('why-not').innerText()), 'and explains why');
@@ -158,32 +160,35 @@ console.log('\n[V2] Discover: Recommended, Eligible, Not eligible');
   ok(/Your tester profile does not match this task/.test(await page.getByTestId('eligibility-panel').innerText()), 'the task page explains the mismatch');
   await ctx.close();
 
-  // unscreened professional
+  // tech-savvy with the four answers but NOT assessed: pending assessment
   const be2 = createBackend({ feed: feed(), pages: pagesFor(rows), tester: tester(['tech_savvy']) });
   const c2 = await newPage(browser, 1280);
   await be2.install(c2.ctx);
   await c2.page.goto(ENV + '/discover');
-  await c2.page.getByText('Delta targeted tech').waitFor();
+  await c2.page.getByText('Delta targeted tech').waitFor({ state: 'attached' });
+  await c2.page.getByTestId('not-available').evaluate((el) => { el.open = true; });
   const dd = card(c2.page, 'Delta targeted tech');
-  ok(/Not eligible: screening needed/.test(await dd.getByTestId('not-eligible-badge').innerText()) && /Tech-Savvy Users needs a quick screening first/.test(await dd.getByTestId('why-not').innerText()), 'a tech_savvy tester WITHOUT screening: not eligible for the tech task, and the screening is named');
-  ok((await c2.page.getByTestId('not-eligible-badge').count()) === 3 && (await dd.getByRole('link', { name: 'Start test' }).count()) === 0, 'and for every task that needs the screening (Delta, Epsilon) or another category (Gamma)');
+  ok(/Not eligible: qualification required/.test(await dd.getByTestId('not-eligible-badge').innerText()) && /Tech-Savvy Users is not active yet/.test(await dd.getByTestId('why-not').innerText()), 'a tech_savvy tester WITHOUT an assessment: not eligible for the tech task, and the category is named');
+  ok((await c2.page.getByTestId('not-eligible-badge').count()) === 3 && (await dd.getByRole('link', { name: 'Start test' }).count()) === 0, 'and for every task that needs the assessment (Delta, Epsilon) or another category (Gamma)');
+  ok((await card(c2.page, 'Zeta open prefers tech').getByTestId('match-badge').count()) === 0 && (await card(c2.page, 'Zeta open prefers tech').getByRole('link', { name: 'Start test' }).count()) === 1, 'the OPEN task that prefers Tech-Savvy is startable but is not "matched" through a pending category');
   await c2.ctx.close();
-  // screened
+  // assessed
   const be3 = createBackend({ feed: feed(), pages: pagesFor(rows), tester: tester(['tech_savvy']), screened: ['tech_savvy'] });
   const c3 = await newPage(browser, 1280);
   await be3.install(c3.ctx);
   await c3.page.goto(ENV + '/discover');
-  await c3.page.getByText('Delta targeted tech').waitFor();
-  ok(JSON.stringify(await titles(c3.page)) === JSON.stringify(['Delta targeted tech', 'Epsilon targeted tech+students', 'Zeta open prefers tech', 'Alpha open plain', 'Beta open prefers students', 'Gamma targeted students']), 'after the screening the tech tasks become Recommended and rise to the top; the students-only task stays last', JSON.stringify(await titles(c3.page)));
+  await c3.page.getByText('Delta targeted tech').waitFor({ state: 'attached' });
+  await c3.page.getByTestId('not-available').evaluate((el) => { el.open = true; });
+  ok(JSON.stringify(await titles(c3.page)) === JSON.stringify(['Delta targeted tech', 'Epsilon targeted tech+students', 'Zeta open prefers tech', 'Alpha open plain', 'Beta open prefers students', 'Gamma targeted students']), 'after the assessment the tech tasks match and rise to the top; the students-only task is last (not available)', JSON.stringify(await titles(c3.page)));
   await c3.ctx.close();
   // no profile
   const be4 = createBackend({ feed: feed(), pages: pagesFor(rows) });
   const c4 = await newPage(browser, 1280);
   await be4.install(c4.ctx);
   await c4.page.goto(ENV + '/discover');
-  await c4.page.getByText('Alpha open plain').waitFor();
-  ok((await c4.page.getByTestId('recommended-badge').count()) === 0 && (await c4.page.locator('[data-fit=not_eligible]').count()) === 3, 'no profile: nothing recommended, the three targeted tasks are not eligible, open tasks stay available');
-  ok(/needs a tester profile/.test(await c4.page.getByTestId('not-eligible-badge').first().innerText()), 'reason: needs a tester profile');
+  await c4.page.getByTestId('profile-needed').waitFor();
+  ok((await c4.page.getByTestId('match-badge').count()) === 0 && (await c4.page.locator('[data-fit=not_eligible]').count()) === 6, 'no profile: nothing matches and every task (open ones included) waits for a completed profile');
+  ok(/complete your profile first/.test(await c4.page.getByTestId('not-eligible-badge').first().innerText()), 'reason: complete your profile first');
   await c4.ctx.close();
 }
 
@@ -192,9 +197,9 @@ console.log('\n[V3] Task page: why a tester cannot start, and what to do');
 {
   const rows = [row(4, 'Delta targeted tech', 'targeted', ['tech_savvy'], 30), row(1, 'Alpha open plain', 'open', [], 60)];
   const variants = [
-    ['no profile', {}, /no tester profile/, 'edit-profile'],
+    ['no profile', {}, /Complete your tester profile first/, 'edit-profile'],
     ['category mismatch', { tester: tester(['students_learners']) }, /does not include any of these categories/, 'edit-profile'],
-    ['screening required', { tester: tester(['tech_savvy']) }, /needs a quick screening|screening before/, 'take-screening'],
+    ['screening required', { tester: tester(['tech_savvy']) }, /Qualification required/, 'answer-questions'],
   ];
   for (const [label, opts, re, cta] of variants) {
     const be = createBackend({ feed: rows, pages: pagesFor(rows), ...opts });
@@ -210,7 +215,7 @@ console.log('\n[V3] Task page: why a tester cannot start, and what to do');
     ok(await page.getByTestId('targeted-info').isVisible() && /Targeted testing/.test(await page.getByTestId('targeted-info').innerText()), `[${label}] the page labels the task as targeted and shows who it is for`);
     ok(/only open to eligible testers/.test(await bodyText(page)), `[${label}] the feedback column says it is only open to eligible testers`);
     if (label === 'screening required') {
-      ok((await page.getByTestId('take-screening').getAttribute('href')) === '/profile?screening=tech_savvy', 'the screening link deep-links to the right category');
+      ok((await page.getByTestId('answer-questions').getAttribute('href')) === '/profile?answers=tech_savvy', 'the link deep-links to the questions of the right category');
       ok(/self-reported/.test(pt) && /not a verified credential/.test(pt), 'and says the screening is self-reported, not a verified credential');
     }
     ok(be.called('start_test').length === 0, `[${label}] nothing was sent to start_test`);
@@ -220,7 +225,15 @@ console.log('\n[V3] Task page: why a tester cannot start, and what to do');
   }
 
   // open tasks are untouched
-  const beO = createBackend({ feed: rows, pages: pagesFor(rows) });
+  // a tester WITHOUT a completed profile cannot reserve even an open task: the page explains it
+  const beN = createBackend({ feed: rows, pages: pagesFor(rows) });
+  const nn = await newPage(browser, 1280);
+  await beN.install(nn.ctx);
+  await nn.page.goto(ENV + `/test/${ID(1)}`);
+  await nn.page.getByTestId('eligibility-panel').waitFor();
+  ok(/Complete your tester profile first/.test(await nn.page.getByTestId('eligibility-panel').innerText()) && (await nn.page.getByRole('button', { name: /Reserve task/ }).count()) === 0 && (await nn.page.getByTestId('edit-profile').getAttribute('href')) === '/profile', 'an OPEN task for a tester without a completed profile: panel, link to the profile, no Reserve button');
+  await nn.ctx.close();
+  const beO = createBackend({ feed: rows, pages: pagesFor(rows), tester: tester(['students_learners']) });
   const o = await newPage(browser, 1280);
   await beO.install(o.ctx);
   await o.page.goto(ENV + `/test/${ID(1)}`);
@@ -246,11 +259,11 @@ console.log('\n[V3] Task page: why a tester cannot start, and what to do');
   await beS.install(s.ctx);
   await s.page.goto(ENV + `/test/${ID(4)}`);
   await s.page.getByRole('button', { name: /Reserve task/ }).waitFor();
-  beS.s.forced.start_test = { message: 'not_eligible', details: 'screening_required' };
-  beS.s.screened.delete('tech_savvy'); // the screening version changed meanwhile
+  beS.s.forced.start_test = { message: 'not_eligible', details: 'qualification_required' };
+  beS.s.qualified.delete('tech_savvy'); // the assessment decision became stale meanwhile (e.g. the answers were edited)
   await s.page.getByRole('button', { name: /Reserve task/ }).click();
   await s.page.getByTestId('eligibility-panel').waitFor();
-  ok((await s.page.getByTestId('take-screening').count()) === 1 && beS.s.balance === 1, 'a stale page: the server refuses, the panel appears with the real reason, credits untouched');
+  ok((await s.page.getByTestId('answer-questions').count()) === 1 && beS.s.balance === 1, 'a stale page: the server refuses, the panel appears with the real reason, credits untouched');
   await s.ctx.close();
 
   // in-progress test is never interrupted by a profile edit
@@ -264,84 +277,6 @@ console.log('\n[V3] Task page: why a tester cannot start, and what to do');
   ok((await p.page.getByTestId('eligibility-panel').count()) === 0 && /Your reservation is in progress/.test(await p.page.getByTestId('eligible-note').innerText()), 'with a LIVE reservation the page keeps working even though the profile no longer matches (in-progress test protected)');
   ok(await p.page.getByRole('button', { name: /Submit feedback/ }).isVisible(), 'and the feedback form is there');
   await p.ctx.close();
-}
-
-// ───────────── profile: screening ─────────────
-console.log('\n[V4] Tester profile: self-reported screening');
-{
-  const be = createBackend({ tester: tester(['tech_savvy']), screened: ['business_office'] });
-  const { ctx, page, errors } = await newPage(browser, 1280);
-  await be.install(ctx);
-  await page.goto(ENV + '/profile');
-  await page.getByTestId('screening-section').waitFor();
-  const sec = await page.getByTestId('screening-section').innerText();
-  ok((await page.locator('[data-testid^=screening-row-]').count()) === 3, 'exactly the three professional categories have a screening row (the two general ones need none)');
-  ok(/Students & Learners and Everyday & Non-Technical Users need none/.test(sec.replace(/\s+/g, ' ')) && /never\s+affects open tasks/.test(sec.replace(/\s+/g, ' ')), 'the page says which categories need no screening and that open tasks are unaffected');
-  ok((await page.getByTestId('screened-business_office').innerText()).includes('Screened — self-reported experience') && (await page.getByTestId('not-screened-tech_savvy').count()) === 1 && (await page.getByTestId('not-screened-founders_builders').count()) === 1, 'each row shows its status: "Screened — self-reported experience" or "Not screened yet"');
-  const txt = (await bodyText(page)).replace(/not a verified credential/gi, '').replace(/does not verify/gi, '');
-  ok(!/\b(verified|certified|accredited|validated)\b/i.test(txt) && /self-reported/i.test(sec), 'the screening is never called verified / certified (only "self-reported", and "not a verified credential")');
-  ok((await page.locator('input[type=password], input[type=email]').count()) === 0, 'anonymous: still no email / password anywhere');
-
-  await page.getByTestId('start-screening-tech_savvy').click();
-  const panel = page.getByTestId('screening-tech_savvy');
-  await panel.getByTestId('q-q1').waitFor();
-  ok((await panel.locator('fieldset').count()) === 4 && /individual answers are not stored/.test(await panel.innerText()) && /self-reported/.test(await panel.innerText()), 'the screening shows 4 short questions and says answers are not stored and the result is self-reported');
-  ok(await panel.getByTestId('screening-submit').isDisabled(), 'Submit is disabled until every question is answered');
-  await panel.getByTestId('opt-q1-a').check();
-  await panel.getByTestId('opt-q1-none').check();
-  ok(!(await panel.getByTestId('opt-q1-a').isChecked()) && await panel.getByTestId('opt-q1-none').isChecked(), '"None of these" is exclusive (choosing it clears the others)');
-  await panel.getByTestId('opt-q1-a').check();
-  ok(!(await panel.getByTestId('opt-q1-none').isChecked()), 'and choosing an activity clears "None of these"');
-  for (const q of ['q2', 'q3', 'q4']) await panel.getByTestId(`opt-${q}-none`).check();
-  await panel.getByTestId('screening-submit').click();
-  await panel.getByTestId('screening-not-passed').waitFor();
-  const np = await panel.getByTestId('screening-not-passed').innerText();
-  ok(/1 area/.test(np) && /at least 2 are needed/.test(np) && /2 attempts left/.test(np), 'a failed attempt says how many areas were reported, how many are needed, and attempts left');
-  ok(JSON.stringify(be.s.screeningSubmits[0].answers) === JSON.stringify({ q1: ['a'], q2: ['none'], q3: ['none'], q4: ['none'] }) && be.s.screeningSubmits[0].cat === 'tech_savvy', 'the payload is {question: [option ids]} for the right category');
-  await panel.getByTestId('opt-q2-a').check();
-  await panel.getByTestId('screening-submit').click();
-  await page.getByText('Screened — self-reported experience').first().waitFor();
-  await waitUntil(async () => (await page.getByTestId('screened-tech_savvy').count()) === 1, 6000);
-  ok((await page.getByTestId('screened-tech_savvy').count()) === 1 && be.s.screened.has('tech_savvy'), 'a passing attempt turns the row into "Screened — self-reported experience"');
-  ok(be.s.balance === 1, 'screening never touches credits');
-  await page.screenshot({ path: `${SHOTS}/v2-profile-screening-1280.png`, fullPage: true });
-  ok(errors.length === 0, 'no console errors', errors.join('|'));
-  await ctx.close();
-
-  // deep link from a task page opens the right screening
-  const be2 = createBackend({ tester: tester(['founders_builders']) });
-  const c2 = await newPage(browser, 1280);
-  await be2.install(c2.ctx);
-  await c2.page.goto(ENV + '/profile?screening=founders_builders');
-  await c2.page.getByTestId('screening-founders_builders').getByTestId('q-q1').waitFor();
-  ok((await c2.page.getByTestId('screening-tech_savvy').count()) === 0, '/profile?screening=founders_builders opens exactly that screening');
-  await c2.ctx.close();
-
-  // attempts exhausted
-  const be3 = createBackend({ tester: tester(['business_office']), attempts: { business_office: 3 } });
-  const c3 = await newPage(browser, 1280);
-  await be3.install(c3.ctx);
-  await c3.page.goto(ENV + '/profile');
-  await c3.page.getByTestId('screening-section').waitFor();
-  ok(/next attempt after/.test(await c3.page.getByTestId('not-screened-business_office').innerText()), 'with no attempts left the row says when the next attempt opens');
-  await c3.page.getByTestId('start-screening-business_office').click();
-  await c3.page.getByText('You have used all 3 screening attempts for the last 24 hours.', { exact: false }).waitFor();
-  ok((await c3.page.getByTestId('screening-submit').count()) === 0, 'and the form is not offered');
-  await c3.ctx.close();
-
-  // server rate limit surfaces in plain language
-  const be4 = createBackend({ tester: tester(['business_office']) });
-  const c4 = await newPage(browser, 1280);
-  await be4.install(c4.ctx);
-  await c4.page.goto(ENV + '/profile?screening=business_office');
-  const pnl = c4.page.getByTestId('screening-business_office');
-  await pnl.getByTestId('q-q1').waitFor();
-  be4.s.attempts.business_office = 3;
-  for (const q of ['q1', 'q2', 'q3', 'q4']) await pnl.getByTestId(`opt-${q}-a`).check();
-  await pnl.getByTestId('screening-submit').click();
-  await c4.page.getByText('You have used all 3 screening attempts', { exact: false }).first().waitFor();
-  ok(true, 'a server-side rate limit is shown as a plain message');
-  await c4.ctx.close();
 }
 
 // ───────────── dashboard ─────────────
@@ -377,13 +312,13 @@ console.log('\n[V6] UI deployed before migration 7: everything still works');
   await page.goto(ENV + '/discover');
   await page.getByText('Beta open prefers students').waitFor();
   ok((await page.getByTestId('mode-badge').count()) === 0 && (await page.getByTestId('modes-legend').count()) === 0 && (await page.getByTestId('not-eligible-badge').count()) === 0, 'Discover falls back to the Matching-v1 feed: no mode badges, no legend, nothing "not eligible"');
-  ok((await page.getByTestId('recommended-badge').count()) > 0 && be.called('list_matched_campaigns').length === 1, 'the v1 recommendations still work');
+  ok((await page.getByTestId('match-badge').count()) > 0 && be.called('list_matched_campaigns').length === 1, 'the v1 matching still works');
   await page.goto(ENV + `/test/${ID(1)}`);
   await page.getByRole('button', { name: /Reserve task/ }).waitFor();
   ok((await page.getByTestId('eligibility-panel').count()) === 0, 'a task page has no eligibility UI');
   await page.goto(ENV + '/profile');
   await page.getByTestId('profile-form').waitFor();
-  ok((await page.getByTestId('screening-section').count()) === 0, 'the profile page has no screening section');
+  ok((await page.getByTestId('experience-section').count()) === 0 && (await page.getByTestId('ai-consent').count()) === 0, 'the profile page has no experience section and no consent card (the server cannot store them yet)');
   ok(errors.filter((e) => !/404|400/.test(e)).length === 0, 'no unexpected console errors', errors.join('|'));
   await ctx.close();
 }
@@ -399,7 +334,7 @@ console.log('\n[V7] mobile (360 px)');
     ['/create', async () => { await page.getByLabel('Project name').waitFor(); await page.getByTestId('mode-targeted').locator('input').check(); }, 'create'],
     ['/discover', async () => { await page.getByTestId('modes-legend').waitFor(); }, 'discover'],
     [`/test/${ID(4)}`, async () => { await page.getByTestId('eligibility-panel').waitFor(); }, 'ineligible'],
-    ['/profile?screening=tech_savvy', async () => { await page.getByTestId('screening-tech_savvy').getByTestId('q-q1').waitFor(); }, 'screening'],
+    ['/profile?answers=tech_savvy', async () => { await page.getByTestId('experience-tech_savvy').getByTestId('answer-q1').waitFor(); }, 'experience'],
     ['/', async () => { await page.getByTestId('matching-section').waitFor(); }, 'landing'],
   ];
   for (const [path, wait, shot] of stops) {
@@ -408,10 +343,10 @@ console.log('\n[V7] mobile (360 px)');
     ok(!(await overflowX(page)), `[360px] ${path}: no horizontal overflow`);
     await page.screenshot({ path: `${SHOTS}/v2-${shot}-360.png`, fullPage: true });
   }
-  await page.goto(ENV + '/profile?screening=tech_savvy');
-  await page.getByTestId('screening-tech_savvy').getByTestId('q-q1').waitFor();
-  const first = await page.getByTestId('screening-tech_savvy').locator('label').first().boundingBox();
-  ok(first && first.height >= 36, `[360px] screening options are comfortable tap targets (${first && Math.round(first.height)}px high)`);
+  await page.goto(ENV + '/profile?answers=tech_savvy');
+  await page.getByTestId('experience-tech_savvy').getByTestId('answer-q1').waitFor();
+  const first = await page.getByTestId('experience-tech_savvy').getByTestId('answer-q1').boundingBox();
+  ok(first && first.height >= 36, `[360px] answer boxes are comfortable tap targets (${first && Math.round(first.height)}px high)`);
   ok(errors.length === 0, 'no console errors', errors.join('|'));
   await ctx.close();
 }

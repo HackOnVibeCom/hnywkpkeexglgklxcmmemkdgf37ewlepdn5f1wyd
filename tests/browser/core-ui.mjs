@@ -1,5 +1,5 @@
 // Core MVP flows in real Chrome against a STUBBED Supabase API (see stub.mjs).
-import { CAMP_ID, SITE, createBackend, dashCampaign, iso, HOST } from './stub.mjs';
+import { CAMP_ID, SITE, createReadyBackend as createBackend, dashCampaign, iso, HOST } from './stub.mjs';
 import { SHOTS, launch, newPage, overflowX, reporter, waitUntil } from './lib.mjs';
 
 const NOENV = process.env.BASE_NOENV;

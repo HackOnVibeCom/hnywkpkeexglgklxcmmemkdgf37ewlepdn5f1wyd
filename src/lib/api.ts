@@ -16,9 +16,9 @@ import type {
   OpenCampaign,
   Profile,
   SaveTesterProfileInput,
-  Screening,
-  ScreeningResult,
-  ScreeningStatus,
+  ExperienceCategory,
+  ExperienceQuestions,
+  MyExperience,
   StartTestResult,
   SubmitTestInput,
   SubmitTestResult,
@@ -55,10 +55,11 @@ const FRIENDLY: Record<string, string> = {
   not_eligible: 'You are not eligible to start this task.',
   targeted_requires_categories: 'Targeted testing needs at least one tester category. Choose one, or switch to open testing.',
   invalid_mode: 'Choose open or targeted testing.',
-  screening_not_required: 'This category has no screening: just add it to your tester profile.',
-  screening_unavailable: 'This screening is not available right now. Please try again later.',
-  already_screened: 'You have already completed this screening.',
-  invalid_answers: 'Please answer every question. Choose "None of these" if nothing applies, and do not combine it with other choices.',
+  screening_replaced: 'The old multiple-choice screening was replaced by four short written questions. Open your tester profile to answer them.',
+  invalid_category: 'This category is not valid. Reload the page and try again.',
+  profile_required: 'Save your tester profile (nickname and categories) first, then answer the questions.',
+  invalid_consent: 'Choose whether to allow AI processing.',
+  invalid_answers: 'Please answer all four questions in a few words of your own (15–800 characters each).',
   matching_unavailable: 'Targeted Tester Matching is not available on this server yet. Everything else works as before.',
   invalid_categories: 'One of the selected categories is not valid. Reload the page and choose from the list.',
   campaign_closed: 'This task is no longer open (it was completed, cancelled or expired). No credit was spent or earned — pick another task.',
@@ -99,14 +100,27 @@ export function friendlyError(e: unknown): string {
     return `Please spend at least ${MIN_TEST_SECONDS} seconds actually testing before you submit.${wait}`;
   }
   if (e instanceof ApiError && e.code === 'not_eligible') {
+    if (e.detail === 'profile_incomplete') return 'To start testing, complete the four answers for at least one category on your tester profile page.';
     if (e.detail === 'no_profile') return 'This task is for specific kinds of testers. Add a tester profile with a matching category first.';
     if (e.detail === 'category_mismatch') return 'Your tester profile does not match this task’s required categories.';
-    if (e.detail === 'screening_required') return 'This task needs a completed screening for one of its categories first. You can take it on your tester profile page.';
+    if (e.detail === 'qualification_required' || e.detail === 'screening_required') return 'This task needs one of its categories to be active on your tester profile (answers complete and, for professional categories, assessed). Check your tester profile page.';
   }
-  if (e instanceof ApiError && e.code === 'screening_rate_limited') {
+  if (e instanceof ApiError && e.code === 'invalid_answers' && e.detail) {
+    const m = /^(q[1-4]):(too_short|too_long|too_few_words|control_chars|missing)$/.exec(e.detail);
+    if (m) {
+      const n = m[1].slice(1);
+      if (m[2] === 'too_short') return `Answer ${n} is too short: please write at least 15 characters.`;
+      if (m[2] === 'too_long') return `Answer ${n} is too long: please keep it under 800 characters.`;
+      if (m[2] === 'too_few_words') return `Answer ${n} needs at least three different words.`;
+      if (m[2] === 'control_chars') return `Answer ${n} contains characters that are not allowed.`;
+      return `Please answer question ${n}.`;
+    }
+    if (e.detail === 'duplicate_answers') return 'Your four answers must be different from each other.';
+  }
+  if (e instanceof ApiError && e.code === 'experience_rate_limited') {
     const at = e.detail ? new Date(e.detail.replace(' ', 'T')) : null;
-    const when = at && !Number.isNaN(at.getTime()) ? ` You can try again after ${at.toLocaleString()}.` : ' Please try again later.';
-    return `You have used all 3 screening attempts for the last 24 hours.${when}`;
+    const when = at && !Number.isNaN(at.getTime()) ? ` You can save again after ${at.toLocaleString()}.` : ' Please try again later.';
+    return `You have saved this category 5 times in the last 24 hours.${when}`;
   }
   if (e instanceof ApiError && e.code && FRIENDLY[e.code]) return FRIENDLY[e.code];
   const msg = e instanceof Error ? e.message : String(e);
@@ -191,21 +205,33 @@ export async function getCampaignEligibility(campaignId: string): Promise<Campai
   }
 }
 
-/** Screening questions of a professional category (server-held, versioned). */
-export const getScreening = (category: string) => matchingRpc<Screening>('get_screening', { p_category: category });
-
-export const submitScreening = (category: string, answers: Record<string, string[]>) =>
-  matchingRpc<ScreeningResult>('submit_screening', { p_category: category, p_answers: answers });
-
-/** My screening status per professional category; [] on a backend without screening. */
-export async function getMyScreeningStatus(): Promise<ScreeningStatus[]> {
+/**
+ * My experience status: which categories are inactive / incomplete / pending assessment / active, whether I may take tests,
+ * and my AI consent. null = the backend predates migration 8 (the UI then shows the previous behaviour).
+ */
+export async function getMyExperience(): Promise<MyExperience | null> {
   try {
-    return (await rpc<ScreeningStatus[]>('get_my_screening_status')) ?? [];
+    return (await rpc<MyExperience>('get_my_experience')) ?? null;
   } catch (e) {
-    if (isMissingFunction(e)) return [];
+    if (isMissingFunction(e)) return null;
     throw e;
   }
 }
+
+/** The four questions of one category (current version) plus MY stored answers (owner only). */
+export const getExperienceQuestions = (category: string) => rpc<ExperienceQuestions>('get_experience_questions', { p_category: category });
+
+/** Save my four answers; returns that category's new status. Server validates; never activates a professional category. */
+export const saveExperienceAnswers = (category: string, answers: Record<string, string>) =>
+  rpc<ExperienceCategory>('save_experience_answers', { p_category: category, p_answers: answers });
+
+/** Opt in / out of AI processing of my bio and answers. */
+export const setAiConsent = (granted: boolean) =>
+  rpc<{ granted: boolean; policy_version: number; updated_at: string }>('set_ai_consent', { p_granted: granted });
+
+/** Delete my experience answers (one category or all) and the assessment decisions made about them. */
+export const deleteMyExperience = (category?: string) =>
+  rpc<{ deleted_answers: number; deleted_decisions: number }>('delete_my_experience', category ? { p_category: category } : {});
 
 /** My optional tester profile, or null when I have not created one (or the backend predates matching). */
 export async function getMyTesterProfile(): Promise<TesterProfile | null> {

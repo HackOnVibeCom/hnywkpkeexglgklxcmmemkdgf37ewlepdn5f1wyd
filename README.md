@@ -34,7 +34,7 @@ No SSR, Node server, WebRTC or PeerJS.
 | **Phase 1: campaign lifecycle + anti-abuse** | Live (migration 4): 7-day expiry, 15-minute reservations, 60-second minimum testing time, 5 rewarded tests per rolling 24 h, founder cancel, refund exactly once, feedback never deleted. |
 | **Phase 2: referrals, sharing, Turnstile** | Live (migration 5 + frontend): referral links (3 rewarded referrals max), invite cards, a results card built in the browser, and Cloudflare Turnstile with Supabase CAPTCHA **enforced** (sign-ups without a valid token are rejected with HTTP 400). |
 | **Targeted Tester Matching v1** | **Live** (2026-11-15): migration 6 applied to production, UI deployed, merged into `main` (see [below](#targeted-tester-matching-v1)). |
-| **Matching v2: Open vs Targeted testing + screening** | Built and tested on branch `feat/matching-v2` (migration 7, **not applied, not deployed** — see [below](#matching-v2-open-vs-targeted-testing-and-screening)). |
+| **Matching v2: Open vs Targeted testing + screening** | Built and tested on branch `feat/matching-v2` (migration 7 applied and deployed; migration 8 experience profile **not applied, not deployed** — see [below](#matching-v2-open-vs-targeted-testing-and-screening)). |
 | Automated tests | `npm run test:db` (PGlite: 119 core + 118 lifecycle + 91 referral + 31 upgrade-rehearsal assertions), `npm run test:browser` (real Chrome, stubbed API: 58 + 77 + 62 checks), `tests/browser/csp-check.mjs` (CSP policy under real Chrome). Real-project scripts in `tests/live/` are opt-in and, with CAPTCHA now enforced, need a token path (e.g. a temporary CAPTCHA pause). |
 | 5 screens (landing, discover, create, test, dashboard) | Implemented and typechecked; layouts checked at 360, 390, 768 and 1280 px. |
 | Deployed site | <https://uxbarter.vercel.app> (Vercel Production; the original <https://peerprobe.vercel.app> stays attached as a secondary domain). Security headers are set in `vercel.json`; a Content-Security-Policy is configured in **Report-Only** mode (see [Known limitations](#known-limitations-honest-list)). |
@@ -163,7 +163,7 @@ Founders can say which kinds of testers they would like; testers can say what ki
 
 ## Matching v2: Open vs Targeted testing and screening
 
-> **Status: implemented and tested locally on branch `feat/matching-v2`. Migration 7 is NOT applied to production, the UI is NOT deployed, nothing is merged.** Prerequisites, ordered rollout and rollback: [docs/MATCHING_V2_ROLLOUT.md](docs/MATCHING_V2_ROLLOUT.md).
+> **Status: migration 7 is applied to production and the Matching v2 UI is deployed (PR #3 not merged yet). The follow-up "experience profile" (migration 8: four open-ended answers per category, pending/active categories, AI consent, server-only qualification interface; see [docs/AI_INTEGRATION_CONTRACT.md](docs/AI_INTEGRATION_CONTRACT.md)) is built and tested locally only: NOT applied, NOT deployed.** Prerequisites, ordered rollout and rollback: [docs/MATCHING_V2_ROLLOUT.md](docs/MATCHING_V2_ROLLOUT.md).
 
 Founders now choose how a request is shared. Matching v1 (above) is unchanged for **open** testing.
 
