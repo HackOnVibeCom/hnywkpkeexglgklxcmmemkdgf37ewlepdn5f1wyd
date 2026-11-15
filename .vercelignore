@@ -1,0 +1,13 @@
+# Files the Vercel CLI must never upload (the build only needs index.html, src/, public/, package*.json,
+# tsconfig*.json and vite.config.ts). Env values come from the Vercel project's environment variables.
+.env
+.env.*
+!.env.example
+.claude-memory
+.wrangler
+.github
+supabase
+tests
+dist
+node_modules
+*.log

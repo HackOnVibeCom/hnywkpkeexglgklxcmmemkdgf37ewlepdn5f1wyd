@@ -1,0 +1,28 @@
+# dependencies
+node_modules/
+
+# build output (CI builds it; never commit)
+dist/
+
+# local env — NEVER commit secrets.
+# `.env.production` is intentionally NOT ignored: it may hold ONLY the public
+# Supabase URL + anon/publishable key (safe by design, protected by RLS).
+.env
+.env.local
+.env.*.local
+
+# logs / OS / editor
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+*.tsbuildinfo
+.vscode/*
+!.vscode/extensions.json
+
+# Supabase local dev state (if you use the Supabase CLI)
+supabase/.branches/
+supabase/.temp/
+
+# Vercel CLI link + pulled env (project/org ids, pulled variables)
+.vercel
