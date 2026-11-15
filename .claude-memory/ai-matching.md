@@ -35,6 +35,9 @@ After a valid save of a professional category's answers with consent on, or when
 ## First real run (2026-11-15)
 `scripts/ai-smoke-test.mjs` against gpt-6-luna (effort low): 11/11 requests OK, all expectations passed, 10.8k in + 2.8k out tokens, ~$0.0025. Strict schema + effort accepted. Key set up with `scripts/setup-openai-smoke-key.ps1` (hidden prompt, owner-only ACL, ~/.uxbarter/openai-smoke.env). Observed: one-word quote accepted as evidence; reasons may paraphrase campaign text. Still unverified: Supabase hosted runtime, real PostgREST, real concurrency, quality at scale.
 
+## ADR-027 — Evidence strength + grounded explanations (policy 3, 2026-11-15)
+Isolated ordinary single words are not evidence; concise skills/acronyms (SQL, Docker, React) are; strong needs a phrase or two skills. Explanations must share words with the tester's evidence, not credit campaign-only tools, not mostly restate the campaign, else a deterministic `You wrote: "..."` sentence. POLICY_VERSION 3. Test stand-in models must cite their STRONGEST sentence (a bio quote like "I love gaming" is correctly rejected).
+
 ## Gotchas
 - Erasure: `ai_apply_erasure_events()` (reads the contract's events, deletes by subject_ref, THEN advances the cursor, one transaction) runs at the start of every request; optionally schedule it with pg_cron.
 - `AI_MIN_RUN_INTERVAL_SECONDS=0` must be honoured (the Deno e2e found `int()` rejecting 0).
