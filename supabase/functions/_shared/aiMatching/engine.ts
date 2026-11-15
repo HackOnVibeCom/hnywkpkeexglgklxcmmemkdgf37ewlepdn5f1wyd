@@ -22,7 +22,7 @@ import { buildProfile } from './profile.ts';
 import { looksLikeInstruction } from './guard.ts';
 import { ANALYSIS_SCHEMA, ANALYSIS_SYSTEM, MATCH_SCHEMA, MATCH_SYSTEM, analysisUserMessage, matchUserMessage } from './prompts.ts';
 import { CATEGORY_LABELS } from './categories.ts';
-import { canonicalJson, cleanText, LIMITS, POLICY_VERSION, sha256Hex } from './util.ts';
+import { canonicalJson, cleanText, ConsentWithdrawn, LIMITS, POLICY_VERSION, sha256Hex } from './util.ts';
 import { analysisQuoteCorpus, hasMatchableEvidence, parseAnalysis, parseMatches } from './validate.ts';
 import type {
   Analysis, CachedMatch, CampaignForModel, Deps, FeedRow, MatchResult, ModelUsage, Recommendation, RecommendResponse, RecommendStatus,
@@ -130,11 +130,18 @@ export async function recommend(deps: Deps): Promise<RecommendResponse> {
 
   const spent: ModelUsage = { input_tokens: 0, output_tokens: 0 };
   const track = async () => { if (spent.input_tokens + spent.output_tokens > 0) await deps.recordTokens(spent).catch(() => undefined); };
+  // Consent is re-read immediately before EVERY model request (not only when the run started). A withdrawal in between means the
+  // request is not sent; a failed check fails closed (nothing is sent). Results of a call already in flight are never stored
+  // after a withdrawal either: the ai_put_* functions refuse without active consent for this exact subject_ref.
+  const call = async (req: Parameters<Deps['callModel']>[0]) => {
+    if (!(await deps.consentActive(subjectRef))) throw new ConsentWithdrawn();
+    return deps.callModel(req);
+  };
 
   try {
     // 5. Step 1 - understand the tester (only when the profile changed).
     if (!analysis) {
-      const res = await deps.callModel({
+      const res = await call({
         name: 'tester_experience', system: ANALYSIS_SYSTEM, user: analysisUserMessage(profile.forModel),
         schema: ANALYSIS_SCHEMA as unknown as Record<string, unknown>, maxOutputTokens: LIMITS.maxOutputTokensAnalysis,
       });
@@ -151,7 +158,7 @@ export async function recommend(deps: Deps): Promise<RecommendResponse> {
       for (const c of missing) fresh.push({ campaign_id: c.row.campaign_id, profile_hash: profileHash, campaign_hash: c.hash, result: NO_MATCH });
     } else {
       const refs = missing.map((c) => c.model.ref);
-      const res = await deps.callModel({
+      const res = await call({
         name: 'campaign_matches', system: MATCH_SYSTEM, user: matchUserMessage(analysis, missing.map((c) => c.model)),
         schema: MATCH_SCHEMA as unknown as Record<string, unknown>, maxOutputTokens: LIMITS.maxOutputTokensMatch,
       });
@@ -167,8 +174,13 @@ export async function recommend(deps: Deps): Promise<RecommendResponse> {
     await track();
     return build('ok', false);
   } catch (e) {
-    deps.log?.(e instanceof AiError ? `model_${e.code}` : 'run_failed');
     await track();
+    if (e instanceof ConsentWithdrawn) {
+      deps.log?.('consent_withdrawn_midrun');
+      await deps.purgeDerived().catch(() => deps.log?.('purge_failed'));
+      return empty('consent_required');
+    }
+    deps.log?.(e instanceof AiError ? `model_${e.code}` : 'run_failed');
     return build('unavailable', false); // OpenAI down / timeout / refusal / our own bug: the plain Discover list is unaffected
   }
 }

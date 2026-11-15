@@ -18,7 +18,7 @@ import { AiError } from './openai.ts';
 import { looksLikeInstruction } from './guard.ts';
 import { ASSESS_SCHEMA, assessSystemPrompt, assessUserMessage } from './prompts.ts';
 import { DEFAULT_CLARIFICATION, RUBRICS, RUBRIC_VERSION } from './rubrics.ts';
-import { canonicalJson, cleanText, isRecord, LIMITS, normForQuote, POLICY_VERSION, sha256Hex } from './util.ts';
+import { canonicalJson, cleanText, ConsentWithdrawn, isRecord, LIMITS, normForQuote, POLICY_VERSION, sha256Hex } from './util.ts';
 import { groundedQuote, safeText } from './validate.ts';
 import type {
   AssessDeps, AssessmentTarget, AssessOutcome, AssessResponse, AssessResult, AssessStatus, ModelUsage, ProfessionalCategory,
@@ -129,7 +129,8 @@ export async function assess(deps: AssessDeps): Promise<AssessResponse> {
     const text = t.answers.map((a) => a.answer).join(' ');
     if (wordCount(text) < MIN_TOTAL_WORDS) { results.push(result(t, 'needs_clarification', 'thin')); continue; }
     if (looksLikeInstruction(text)) { results.push(result(t, 'needs_clarification', 'instruction')); continue; }
-    const note = notes.find((n) => n.category === t.category && n.answers_hash === t.answers_hash && n.payload.key === noteKey);
+    // Dedupe key = (category, answers_hash [covers the question version], question version, rubric/policy/model/bio): unchanged input is never paid for twice.
+    const note = notes.find((n) => n.category === t.category && n.answers_hash === t.answers_hash && n.payload.key === noteKey && n.payload.question_version === t.question_version);
     if (note) { results.push(result(t, 'needs_clarification', undefined, note.payload.clarification_questions)); continue; }
     toCall.push(t);
   }
@@ -148,6 +149,9 @@ export async function assess(deps: AssessDeps): Promise<AssessResponse> {
   // One category: returns its result and never throws (a failure is a "pending" result, never a decision).
   const one = async (t: AssessmentTarget): Promise<AssessResult> => {
     try {
+      // Consent is re-read immediately before THIS model request (the run may have started minutes ago; a withdrawal since then
+      // means nothing is sent). Fails closed: if the check itself fails, the request is not made.
+      if (!(await deps.consentActive(subject))) throw new ConsentWithdrawn();
       const res = await deps.callModel({
         name: 'professional_assessment', system: assessSystemPrompt(t.category),
         user: assessUserMessage(bio, t.answers.map((a) => ({ question_id: a.question_id, question: cleanText(a.question, 300), answer: cleanText(a.answer, LIMITS.answerChars) }))),
@@ -158,7 +162,7 @@ export async function assess(deps: AssessDeps): Promise<AssessResponse> {
       if (!d) { failures++; deps.log?.('assessment_malformed'); return result(t, 'pending'); }
 
       if (d.decision === 'needs_clarification') {
-        await deps.putNote(subject, t.category, t.answers_hash, { clarification_questions: d.questions, key: noteKey }).catch(() => deps.log?.('note_write_failed'));
+        await deps.putNote(subject, t.category, t.answers_hash, { clarification_questions: d.questions, key: noteKey, question_version: t.question_version }).catch(() => deps.log?.('note_write_failed'));
         return result(t, 'needs_clarification', undefined, d.questions);
       }
       try {
@@ -181,6 +185,7 @@ export async function assess(deps: AssessDeps): Promise<AssessResponse> {
         return result(t, 'pending');
       }
     } catch (e) {
+      if (e instanceof ConsentWithdrawn) { consentGone = true; deps.log?.('consent_withdrawn_midrun'); return result(t, 'pending'); }
       failures++;
       deps.log?.(e instanceof AiError ? `model_${e.code}` : 'assess_failed');
       return result(t, 'pending');
@@ -192,6 +197,9 @@ export async function assess(deps: AssessDeps): Promise<AssessResponse> {
   } finally {
     if (spent.input_tokens + spent.output_tokens > 0) await deps.recordTokens(spent).catch(() => undefined);
   }
-  if (consentGone) return out('consent_required', results);
+  if (consentGone) {
+    await deps.purgeDerived().catch(() => deps.log?.('purge_failed'));
+    return out('consent_required', results);
+  }
   return out(failures === toCall.length ? 'unavailable' : 'ok', results);
 }

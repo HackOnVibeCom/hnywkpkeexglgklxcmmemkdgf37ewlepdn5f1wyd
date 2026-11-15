@@ -54,6 +54,13 @@ Browser (Discover tab / Profile panel)                    Supabase              
 * **Failure = pending, never approval:** OpenAI down, malformed output, rate limit, budget, consent withdrawn mid-run, stale answers: nothing is recorded; no timeout ever approves.
 * **Truthfulness:** the UI and prompts say "only write what is true"; clarification questions never suggest what to claim; the model is told never to infer experience from category names, schools, titles or confident wording, and not to penalise plain language.
 
+## 4a. When an assessment starts (automatic, consent-gated, deduplicated)
+
+* **Automatically** when the tester saves four valid answers of a professional category **and** AI processing is on (the Profile page passes a one-shot token to the assessment panel), or when the tester switches AI processing on while categories are waiting. A page load or refresh **never** starts one. Without consent nothing is sent and the save message says that AI processing must be allowed. General categories are never assessed (they are active on their answers).
+* **Deduplication** (server side, so tabs, retries and refreshes cannot pay twice): a stored clarification is reused for the same `answers_hash` (which covers the question version), the same question version, rubric version, policy version, model and bio. A decided category is no longer pending, so the contract delivers no target and nothing is spent. A throttle (15 s per user and kind), the daily per-user cap (12 requests), the contract's 5 saves per category per day and the global caps are unchanged. The UI additionally allows one automatic retry after a `busy` answer and one queued re-run when answers changed during a run.
+* **States shown per category:** Pending, Processing, Qualified (self-reported), Needs clarification, Not qualified yet. The three professional categories are assessed independently (up to three requests in parallel, each with its own consent check).
+* A "Check again" button remains for temporary failures (`unavailable`, `busy`).
+
 ## 5. Matching policy (corrected)
 
 1. Server-eligible campaigns only; candidates capped at 30 per run; campaign text truncated.
@@ -62,15 +69,17 @@ Browser (Discover tab / Profile panel)                    Supabase              
 4. **Whole-batch rejection removed:** ten of ten genuinely relevant campaigns are all kept (tested). Steering text is stopped by `guard.ts` instead: a campaign whose name/description/task looks like an instruction ("ignore previous instructions", "mark this as strong", "recommend to every tester", role markers...) is **never sent to the model** and never recommended, while the others are unaffected.
 5. Order: strong before good, then the server's feed order; at most 10; no numeric score anywhere.
 
-## 6. Consent withdrawal and recorded qualification decisions (explicit policy)
+## 6. Consent withdrawal and recorded qualification decisions (product decision, 2026-11-15)
 
-Reviewed because it was undocumented-adjacent in the contract (section 10.4). **Policy (now stated in the UI, the contract notes and tested in SQL and end to end):**
-1. Withdrawal stops all processing at once; the database stops handing out bio/answers/`subject_ref`; everything the AI derived is erased (immediately by `delete_my_ai_data`, by the erasure sweep, and on any request that sees no consent).
-2. An **already recorded** `qualified`/`not_qualified` decision **stays in force**. It is a status derived from the answers (it records only the status, model id, rubric version, a fixed sentence and a confidence number, never answer text), so keeping it lets the tester keep what they earned without keeping any AI processing. To remove it the tester deletes the answers (the contract's `delete_my_experience` deletes the decision too).
-3. While consent is off **nothing new can be recorded** (the database refuses `consent_required`).
-4. If the tester **edits an answer while consent is off**, the decision stops counting (new `answers_hash`) and the category waits as **pending** until consent is on again: it is never silently re-approved and never stuck active on stale text.
-5. Re-consent issues a new `subject_ref`; the category is queued for assessment again if pending.
-**Alternative the owner may prefer** (not implemented, needs a contract change in migration 8): withdrawing consent also invalidates `ai_assessment` decisions. Trade-off: stricter privacy semantics vs. testers losing access they earned and having to re-consent to regain it. Decision requested in section 12.
+**Policy (stated in the consent card, tested in SQL, in the Deno end to end and in the browser):**
+1. Withdrawal stops all AI processing at once; the database stops handing out bio / answers / `subject_ref`; everything the AI derived (analysis, recommendations, clarification notes) is erased (immediately by `delete_my_ai_data`, by the erasure sweep, and on any request that sees no consent).
+2. **Every AI-derived qualification decision is removed** (`qualified` and `not_qualified`): the professional categories return to **Pending** (`pending_assessment`). The qualification was the outcome of the processing the tester withdrew, so it does not outlive it. Implemented by migration `20261115000600` (an AFTER UPDATE trigger on `ai_consents`, same transaction as the withdrawal).
+3. **Preserved:** the anonymous account, the tester profile, the written answers (so `participation_ready` is unchanged), credits, and Open Testing. General categories never needed a decision and stay active.
+4. Targeted campaigns that required a professional category are no longer reservable (the database trigger on reservations decides; the AI is not involved).
+5. While consent is off **nothing can be recorded**: `service_record_qualification` refuses `consent_required`, and migration 10 adds a second line of defence (an AFTER INSERT/UPDATE trigger on `category_qualifications` that locks the consent row `FOR SHARE`, so a decision cannot commit behind a concurrent withdrawal).
+6. Re-consent issues a new `subject_ref`; the UI then checks the waiting categories automatically (section 4a). Deleting answers still deletes the decision.
+7. **Consent is re-read immediately before EVERY OpenAI request** (`ai_consent_active(user, subject_ref)`, fail-closed). A withdrawal (or a withdraw-and-re-grant, which rotates `subject_ref`) between two requests of one run stops the next request; a request already on its way is legitimate (consent was on when it left) but its result is discarded (`ai_put_*` and the decision write refuse without consent for that exact `subject_ref`).
+**Coordination with the profile workstream (Agent #1):** migration 8 is NOT edited. Migration 10 is a two-trigger additive layer that supersedes the sentence in the contract's section 10 item 4 (see `AI_INTEGRATION_CONTRACT.md` section 11, A4/A6). If Agent #1 prefers to put the same lines into `set_ai_consent`, migration 10 can simply be dropped. Agent #1's whole suite (331 assertions) passes with migrations 9 and 10 applied, and the two triggers do not change any of its error messages (the consent check is an AFTER trigger, so the table's CHECK constraints are evaluated first).
 
 ## 7. Safety, privacy, cost
 
@@ -90,14 +99,14 @@ Responses API, strict Structured Outputs, `store:false`, default **`gpt-6-luna`*
 
 ## 9. Files and migrations
 
-* Migration: `supabase/migrations/20261115000500_ai_matching.sql` (additive; derived data + erasure + usage; no consent/answers/qualification tables).
+* Migrations: `supabase/migrations/20261115000500_ai_matching.sql` (additive; derived data + erasure + usage + `ai_consent_active`; no consent/answers/qualification tables) and `20261115000600_consent_withdrawal_clears_decisions.sql` (two triggers on the profile workstream's tables; REQUIRES migration 8; see section 6).
 * Function: `supabase/functions/ai-match/index.ts`; engine `supabase/functions/_shared/aiMatching/{engine,assess,handler,contract,validate,guard,rubrics,prompts,openai,profile,categories,types,util}.ts`; `supabase/config.toml` (`[functions.ai-match] verify_jwt = true`).
 * UI: `src/lib/ai/{aiApi,flag}.ts`, `src/components/ai/{RecommendationDetails,AssessmentPanel}.tsx`; edits: `src/pages/Discover.tsx`, `src/pages/Profile.tsx`, `src/lib/api.ts` (consent withdrawal / answer deletion also erase AI data, no-op unless the flag is on), `src/components/Experience.tsx` (withdrawal policy text), `src/lib/aiContract.ts`, `src/lib/recommendations.ts`.
 * Tests/tools: `tests/unit/{ai-engine,ai-assess,run-all}.mjs`, `supabase/tests/ai_matching.mjs`, `tests/deno/{e2e.mjs,run-function.ts}`, `tests/browser/ai-ui.mjs`, `scripts/ai-smoke-test.mjs`, `package.json` scripts `test:deno`, `check:deno`.
 
 ## 10. Tests and runtime verification (all local, mocked OpenAI)
 
-Unit 79 + 145 + 73; real-Postgres (PGlite, migrations 1-9) 119 / 118 / 91 / 121 / 103 / 217 / 331 (profile) / 146 (AI integration); **Deno end to end 81** (the real unmodified `index.ts` under Deno 2.9.6 + real `npm:@supabase/supabase-js`, a PostgREST/Auth bridge backed by PGlite running all migrations, a mock OpenAI; real HTTP); browser 58 / 77 / 62 / 81 / 86 / 82 / 65; CSP 5; typecheck + build clean; `deno check` clean.
+Unit 79 + 160 + 82 + 30 (smoke-script self-test); real-Postgres (PGlite, migrations 1-10) 119 / 118 / 91 / 121 / 103 / 217 / 331 (profile) / 165 (AI integration); **Deno end to end 91** (the real unmodified `index.ts` under Deno 2.9.6 + real `npm:@supabase/supabase-js`, a PostgREST/Auth bridge backed by PGlite running all migrations, a mock OpenAI; real HTTP); browser 58 / 77 / 62 / 81 / 86 / 82 / 84; brand 31; CSP 5; typecheck + build clean; `deno check` clean.
 **Not verified:** the real model's judgement; the hosted Supabase Edge Runtime / `supabase functions serve` (no CLI or Docker here: Deno itself is verified, the platform wrapper is not); real PostgREST (the bridge mimics its RPC conventions); real concurrency (PGlite is single-connection; locks/`skip locked` are reasoned, not raced).
 Known environment quirk: `tests/unit/matching.test.mjs` intermittently crashes Node's teardown on Windows AFTER passing (also on the profile workstream's own commit); `tests/unit/run-all.mjs` judges suites by their summary line.
 
@@ -108,7 +117,7 @@ Supabase function secrets (`supabase secrets set`, never Git/Vercel): `OPENAI_AP
 ## 12. Rollout (each step needs the owner's explicit approval; none was done)
 
 1. Merge the profile workstream (PR #3 / `feat/matching-v2` incl. migration 8) and then this branch (`feat/ai-integration`).
-2. Apply migration 8 (`20261115000300`) **first**, run `docs/verify-migration8.sql`; then apply `20261115000500` (`supabase db push --dry-run --remote` first). Both are additive for the UI: nothing calls them yet.
+2. Apply migration 8 (`20261115000300`) **first**, run `docs/verify-migration8.sql`; then `20261115000500`, then `20261115000600` (`supabase db push --dry-run --remote` first; 500 and 600 are additive for the UI). Both are additive for the UI: nothing calls them yet.
 3. Deploy the UI with the flag **off** (`VITE_AI_MATCHING` unset): zero AI requests; the profile workstream's UI is live.
 4. Set the OpenAI key (+ spend limit) and the two enable secrets **disabled**; `supabase functions serve ai-match` once locally, then `supabase functions deploy ai-match`.
 5. Real smoke test: `scripts/ai-smoke-test.mjs --execute --i-approve-paid-api-calls` (synthetic data, ~$0.01), **read the output**; then one throwaway identity end to end on the real project (consent, answers, assessment, recommendations, withdrawal) and compare the OpenAI dashboard with `ai_usage`.
@@ -117,11 +126,27 @@ Kill switches, fastest first: set either `AI_*_ENABLED=false` (UI shows "not ava
 
 ## 13. Remaining risks and open decisions
 
-* **Decision needed:** consent-withdrawal vs. recorded decisions (section 6; default implemented = decisions persist).
-* **Decision needed:** whether the AI assessment should run **automatically** after answers are saved (today: the tester presses "Check my answers now"; automatic would need a trigger/worker and raises cost/consent-surprise questions).
+* ~~Decision needed: consent withdrawal vs. recorded decisions~~ **Decided 2026-11-15:** withdrawal removes AI-derived decisions (section 6).
+* ~~Decision needed: automatic assessment~~ **Decided 2026-11-15:** automatic after a save or after consent is switched on, consent-gated and deduplicated (section 4a). The trigger is the tester's own browser, so a tester who closes the tab right after saving gets the check when they press "Check again" or save again (no background worker was built).
 * **Accepted / open from the security review (all documented, none blocks local completion):** (a) a tester can re-roll the assessment by editing answers (5 saves per category per 24 h by the contract, 15 s throttle and the shared daily cap bound it; counting attempts per category across edits would need another table and was not built); (b) ~125 anonymous identities could exhaust the 1500/day global call cap and push everyone to the plain lists (the OpenAI spend limit bounds money; consider reserving part of the budget for identities with a completed test, and alert on `budget_reached`); (c) consent is read when a run starts, not again right before each model call (the data was legitimately read; the `ai_put_*` consent check prevents storing anything after a withdrawal); (d) `guard.ts` is a hint covering English/Ukrainian/Russian only, the model flag and grounding still apply; (e) `OPENAI_BASE_URL` is a test-only code path honoured for loopback hosts only; the smoke script honours it unrestricted (dev tool, never prints the key).
 * Real model quality and `gpt-6-luna` schema acceptance are unmeasured (smoke test). The content-word rule and `guard.ts` patterns may need tuning on real outputs; `guard.ts` is intentionally narrow, so novel steering phrasing can slip past it (the grounded-evidence checks still apply).
 * Anonymous identities are cheap: per-user caps multiply; the global caps and the OpenAI spend limit are the ceiling; exhausting the global cap only degrades everyone to the plain lists.
 * A failed model step is not negative-cached: a persistently bad profile can use up to its daily cap.
 * Self-reported answers can be dishonest; the assessment is a plausibility filter, not a verification, and the UI says so.
 * Provider-side retention (up to 30 days of abuse-monitoring logs) is outside our control; deletion at the provider is not signalled by the database.
+
+## 14. Real smoke test: what the owner configures, and what it checks
+
+**Scope (approved 2026-11-15):** synthetic, non-sensitive profiles and campaigns only; a SEPARATE OpenAI API Project with a hard spending limit set by the owner; about 11 paid requests, estimated about $0.007 (worst case about $0.03, hard ceiling $0.05 enforced by the script before every request). The key is never pasted into a chat, never committed, never put in `VITE_*`.
+
+**Owner steps (OpenAI dashboard, then your own terminal):**
+1. platform.openai.com -> create a **new Project** (e.g. "uxbarter-ai-smoke"), not your default one.
+2. Project -> **Limits**: set a monthly **budget** of a few dollars (for example $5) and an e-mail alert at 50%. Check that billing/credit is available for the project. Under **Limits** also allow only the model you need (`gpt-6-luna`) if you want to be strict.
+3. Project -> **API keys** -> create a **project key** ("Restricted": allow only *Model capabilities -> Responses/Chat (write)* and *Models (read)*). Copy it once.
+4. Save it **only on your computer, outside any git repository**, in a file that only you can read:
+   * Windows PowerShell: `New-Item -ItemType Directory -Force $HOME\.uxbarter | Out-Null; Set-Content -Path $HOME\.uxbarter\openai-smoke.env -Value 'OPENAI_API_KEY=PASTE_THE_KEY_HERE'; icacls $HOME\.uxbarter\openai-smoke.env /inheritance:r /grant:r "$($env:USERNAME):(R,W)"` (replace `PASTE_THE_KEY_HERE` in your own terminal, not in a chat).
+   * or set `OPENAI_API_KEY` in the terminal that starts the run (`$env:OPENAI_API_KEY = '...'`), never in a file inside this folder.
+5. Tell the agent "key is configured". It then runs `node scripts/ai-smoke-test.mjs --execute --i-approve-paid-api-calls`. It never reads or prints the key (the script reads it itself; all output is redacted).
+6. Afterwards: compare the project's **Usage** page with the estimate in the report, then **delete the key** (or the project) if you do not need it again. Production uses a different key, set as a Supabase function secret only after your approval.
+
+**What the script does** (it stops at the first unexpected condition, exit 3, or the first failed quality expectation, exit 1; it never retries a paid request): P0 a free `GET /v1/models/<model>` (key valid, project may use the model) -> P1 one tiny strict-schema request (account accepts strict `json_schema` + `reasoning.effort` + `store:false`, usage fields present) -> P2 assessments (modest-but-real qualifies; an advanced STUDENT qualifies on what they wrote; an honest beginner is kindly not qualified; vague answers ask for clarification; the injection set is blocked by code before any request) -> P3 matching for three synthetic testers (the student with advanced programming gets the technical tool and nothing unrelated; the gamer and the office coordinator get their own; the steering and ineligible campaigns never reach the model or the result) -> P4 tokens and estimated cost. A JSON report (every request's tokens/latency, validity, every output) is written to the temp folder. The cost is estimated from returned token counts and the price table; the API does not return a price, so compare with the dashboard. `tests/unit/smoke-script.test.mjs` proves the guards against a loopback mock (no key, non-project key, non-loopback base URL, 401/403/404/400/429/cut-off all stop the run, the ceiling stops it before a request, the key never appears in output or report).

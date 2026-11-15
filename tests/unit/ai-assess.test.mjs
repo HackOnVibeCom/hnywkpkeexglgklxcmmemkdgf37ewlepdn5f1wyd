@@ -38,7 +38,7 @@ const OK_PROPOSAL = (over = {}) => ({
 });
 
 function world({ consent = true, bio = '', targets = [], model, reserve = async () => 'ok', record, notes = [] } = {}) {
-  const w = { calls: [], recorded: [], notes: [...notes], tokens: [], purges: 0, sweeps: 0, logs: [], reserveCalls: [] };
+  const w = { calls: [], recorded: [], notes: [...notes], tokens: [], purges: 0, sweeps: 0, logs: [], reserveCalls: [], consentChecks: [], live: consent };
   w.deps = {
     config: { model: 'stub-model', userDailyCallCap: 12, globalDailyCallCap: 1000, globalDailyTokenCap: 1e6, minRunIntervalSeconds: 0 },
     applyErasures: async () => { w.sweeps++; },
@@ -46,6 +46,7 @@ function world({ consent = true, bio = '', targets = [], model, reserve = async 
     reserveRun: async (c) => { w.reserveCalls.push(c); return reserve(c); },
     recordTokens: async (u) => { w.tokens.push(u); },
     callModel: async (req) => { w.calls.push(req); return { json: await model(req), usage: { input_tokens: 500, output_tokens: 100 } }; },
+    consentActive: async (s) => { w.consentChecks.push(s); if (w.consentCheckFails) throw new Error('db down'); return w.live && s === 'subj-1'; },
     log: (c) => w.logs.push(c),
     getAssessmentInput: async () => ({ consent, subject_ref: consent ? 'subj-1' : null, bio, targets }),
     getNotes: async () => w.notes,
@@ -257,7 +258,54 @@ console.log('[guard: honest vocabulary is not flagged; look-alike and non-Englis
   ok(evil.every((t) => looksLikeInstruction(t)), 'classic English, Ukrainian and Russian injections, zero-width splitting and full-width look-alikes ARE flagged');
 }
 
-console.log('\n[rubric transparency]');
+console.log('\n\n[consent is re-read immediately before EVERY model request; deduplication]');
+{
+  const three = () => [target('tech_savvy', TECH_OK, HASH('a')), target('founders_builders', TECH_OK, HASH('b')), target('business_office', TECH_OK, HASH('c'))];
+  const w = world({ targets: three(), model: async () => OK_PROPOSAL() });
+  const r = await assess(w.deps);
+  ok(r.status === 'ok' && w.calls.length === 3 && w.consentChecks.length === 3 && w.recorded.length === 3, 'three independent categories: consent is checked before each of the three requests');
+
+  // withdrawn after the run was admitted but before any request
+  const b = world({ targets: three(), model: async () => OK_PROPOSAL() });
+  const reserve0 = b.deps.reserveRun;
+  b.deps.reserveRun = async (c) => { const x = await reserve0(c); b.live = false; return x; };
+  const rb = await assess(b.deps);
+  ok(b.calls.length === 0 && b.recorded.length === 0 && rb.status === 'consent_required' && b.purges >= 1, 'withdrawal after admission: NO request is sent, nothing is recorded, derived data is purged');
+  ok(rb.results.every((x) => x.outcome === 'pending'), 'every category stays pending');
+
+  // withdrawn while the request is in flight: the database refuses the decision
+  const c = world({ targets: [target('tech_savvy', TECH_OK, HASH('a'))], model: async () => { c.live = false; return OK_PROPOSAL(); } });
+  c.deps.recordQualification = async () => { throw new Error('consent_required'); };
+  const rc = await assess(c.deps);
+  ok(rc.status === 'consent_required' && rc.results[0].outcome === 'pending', 'withdrawal while a request is in flight: the DB refuses the decision (consent_required), the category stays pending');
+
+  const d = world({ targets: [target('tech_savvy', TECH_OK)], model: async () => OK_PROPOSAL() });
+  d.consentCheckFails = true;
+  const rd = await assess(d.deps);
+  ok(d.calls.length === 0 && d.recorded.length === 0 && rd.status !== 'ok', 'if the consent check fails nothing is sent and nothing is recorded (fails closed)');
+
+  // deduplication: same answers + question version + rubric/policy/model/bio => one paid call only
+  const unclear = async () => ({ outcome: 'unclear', confidence: 'low', criteria: [], plausibility_concern: false, instruction_like_text: false, clarification_questions: ['What did you do yourself?'] });
+  const e = world({ bio: 'I tinker.', targets: [target('tech_savvy', TECH_OK)], model: unclear });
+  await assess(e.deps); await assess(e.deps); await assess(e.deps);
+  ok(e.calls.length === 1, 'three runs (for example three page refreshes) on unchanged answers cost ONE model request');
+  const v2 = target('tech_savvy', TECH_OK); v2.question_version = 2;
+  const gi = e.deps.getAssessmentInput;
+  e.deps.getAssessmentInput = async () => ({ ...(await gi()), targets: [v2] });
+  await assess(e.deps);
+  ok(e.calls.length === 2, 'a new question version is assessed again');
+  // a decided category is not pending any more, so the contract delivers no target: nothing is spent
+  const f = world({ targets: [], model: async () => { throw new Error('must not be called'); } });
+  const rf = await assess(f.deps);
+  ok(rf.status === 'ok' && rf.results.length === 0 && f.calls.length === 0 && f.reserveCalls.length === 0, 'no pending category => no request and no allowance used');
+  // each professional category is independent
+  const g = world({ targets: three(), model: async (req) => (/Founders/.test(req.system) ? { outcome: 'unclear', confidence: 'low', criteria: [], plausibility_concern: false, instruction_like_text: false, clarification_questions: [] } : OK_PROPOSAL()) });
+  const rg = await assess(g.deps);
+  const by = Object.fromEntries(rg.results.map((x) => [x.category, x.outcome]));
+  ok(by.tech_savvy === 'qualified' && by.business_office === 'qualified' && by.founders_builders === 'needs_clarification' && g.recorded.length === 2, 'categories are assessed independently: one needing clarification does not affect the others', JSON.stringify(by));
+}
+
+console.log('\n\n[rubric transparency]');
 {
   for (const c of Object.keys(RUBRICS)) {
     ok(RUBRICS[c].criteria.length === 4 && RUBRICS[c].criteria.every((x) => x.text.length > 30), `${c}: four readable criteria`);

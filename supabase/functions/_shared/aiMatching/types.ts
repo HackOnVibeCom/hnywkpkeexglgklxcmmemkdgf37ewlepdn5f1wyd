@@ -146,6 +146,8 @@ export interface CommonDeps {
   /** Erase everything derived for this user (consent not granted). */
   purgeDerived(): Promise<void>;
   reserveRun(calls: number): Promise<ReserveResult>;
+  /** Is AI consent granted RIGHT NOW for exactly this subject_ref? Asked immediately before EVERY model request. */
+  consentActive(subjectRef: string): Promise<boolean>;
   recordTokens(usage: ModelUsage): Promise<void>;
   callModel(req: ModelRequest): Promise<ModelResponse>;
   /** Optional operational log: a COARSE code only, never prompt text or user data. */
@@ -231,7 +233,7 @@ export interface RecordQualificationArgs {
 export interface AssessNote {
   category: string;
   answers_hash: string;
-  payload: { clarification_questions: string[]; key?: string };
+  payload: { clarification_questions: string[]; key?: string; question_version?: number };
 }
 
 export interface AssessDeps extends CommonDeps {

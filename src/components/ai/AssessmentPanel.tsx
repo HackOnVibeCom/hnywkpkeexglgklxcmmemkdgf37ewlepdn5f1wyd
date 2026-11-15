@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { AssessmentResponse, AssessmentResult } from '../../lib/aiContract';
 import { requestAssessment } from '../../lib/ai/aiApi';
 import { AI_ENABLED } from '../../lib/ai/flag';
@@ -13,35 +13,113 @@ const PRINCIPLES = [
   'This is an assessment of your self-reported answers, not a verification of any credential.',
 ];
 
-/**
- * "Check my answers" for professional categories that are waiting for an assessment. The browser only ASKS: the server reads
- * the answers, decides, and records the decision through the database's one allowed function. Nothing here can set a status.
- * Shown only when the AI build flag is on, consent is granted and at least one professional category is pending.
- */
-export function AssessmentPanel({ exp, onChanged }: { exp: MyExperience; onChanged: () => void }) {
-  const [busy, setBusy] = useState(false);
-  const [resp, setResp] = useState<AssessmentResponse | null>(null);
-  const pending = exp.categories.filter((c) => c.selected && c.requires_assessment && c.state === 'pending_assessment');
-  // Keep showing the latest result even after the category stopped being pending (a recorded decision reloads the page state):
-  // the tester must see what happened and why.
-  if (!AI_ENABLED || !exp.ai_consent.granted || (pending.length === 0 && !resp)) return null;
+/** Wait this long before retrying ONCE when the server says a previous check is still running (its throttle is 15 s). */
+const BUSY_RETRY_MS = 16_000;
 
-  async function run() {
-    setBusy(true);
+type RowState = 'processing' | 'pending' | 'qualified' | 'needs_clarification' | 'not_qualified';
+
+const ROW_LABEL: Record<RowState, string> = {
+  processing: 'Processing…',
+  pending: 'Pending',
+  qualified: 'Qualified (self-reported)',
+  needs_clarification: 'Needs clarification',
+  not_qualified: 'Not qualified yet',
+};
+
+/**
+ * Assessment of the professional categories, shown on the Profile page. The browser only ASKS: the server reads the answers,
+ * decides, and records the decision through the database's one allowed function. Nothing here can set a status.
+ *
+ * When does a check start?
+ *  - AUTOMATICALLY, only right after the tester saved four answers of a professional category (or switched AI processing on while
+ *    categories were waiting): the page passes a new `autoToken` for exactly that event. A page load or refresh never starts one.
+ *  - on request ("Check again"), e.g. after a temporary failure.
+ * The server enforces consent (it re-checks before every model request), per-user and global limits, and does not repeat a paid
+ * request for answers it has already assessed.
+ */
+export function AssessmentPanel({ exp, onChanged, autoToken = 0 }: { exp: MyExperience; onChanged: () => void; autoToken?: number }) {
+  const [processing, setProcessing] = useState(false);
+  const [resp, setResp] = useState<AssessmentResponse | null>(null);
+  const running = useRef(false);
+  const queued = useRef(false);
+  const retried = useRef(false);
+  const timer = useRef<number | null>(null);
+  const alive = useRef(true);
+  const latest = useRef({ granted: exp.ai_consent.granted, onChanged });
+  latest.current = { granted: exp.ai_consent.granted, onChanged };
+
+  const pending = exp.categories.filter((c) => c.selected && c.requires_assessment && c.state === 'pending_assessment');
+
+  async function run(auto: boolean): Promise<void> {
+    if (!AI_ENABLED || !latest.current.granted) return;
+    if (running.current) {
+      queued.current = true; // one more check after the current one (answers may have changed meanwhile)
+      return;
+    }
+    running.current = true;
+    setProcessing(true);
+    setResp(null);
     try {
       const r = await requestAssessment();
+      if (!alive.current) return;
       setResp(r);
-      if (r.results.some((x) => x.outcome === 'qualified' || x.outcome === 'not_qualified')) onChanged();
+      if (r.results.some((x) => x.outcome === 'qualified' || x.outcome === 'not_qualified')) latest.current.onChanged();
+      if (auto && r.status === 'busy' && !retried.current) {
+        retried.current = true;
+        timer.current = window.setTimeout(() => void run(true), BUSY_RETRY_MS);
+      }
     } finally {
-      setBusy(false);
+      running.current = false;
+      if (alive.current) setProcessing(false);
+      if (queued.current && alive.current) {
+        queued.current = false;
+        retried.current = false;
+        void run(true);
+      }
     }
+  }
+
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+      if (timer.current !== null) window.clearTimeout(timer.current);
+    };
+  }, []);
+
+  // A new token = "the tester just saved professional answers / just allowed AI". Never fires on mount (token 0). When the token
+  // arrives before the page has reloaded the new consent state (switching AI on), it waits for `granted` and then fires ONCE.
+  const handled = useRef(0);
+  const granted = exp.ai_consent.granted;
+  useEffect(() => {
+    if (autoToken > handled.current && granted) {
+      handled.current = autoToken;
+      retried.current = false;
+      void run(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoToken, granted]);
+
+  // Keep showing the latest result even after the category stopped being pending (a recorded decision reloads the page state):
+  // the tester must see what happened and why.
+  if (!AI_ENABLED || !exp.ai_consent.granted || (pending.length === 0 && !resp && !processing)) return null;
+
+  const rows: Array<{ category: string; state: RowState; result: AssessmentResult | null }> = [];
+  const seen = new Set<string>();
+  for (const c of pending) {
+    const result = resp?.results.find((x) => x.category === c.category) ?? null;
+    seen.add(c.category);
+    rows.push({ category: c.category, state: processing ? 'processing' : result && result.outcome !== 'pending' ? result.outcome : 'pending', result });
+  }
+  for (const r of resp?.results ?? []) {
+    if (!seen.has(r.category)) rows.push({ category: r.category, state: r.outcome === 'pending' ? 'pending' : r.outcome, result: r });
   }
 
   const notice =
     resp?.status === 'rate_limited'
       ? 'You have used today’s AI allowance. Your categories stay pending; try again tomorrow.'
       : resp?.status === 'busy'
-        ? 'A previous check is still running. Give it a few seconds and try again.'
+        ? 'A previous check is still running. We will try once more in a few seconds; you can also press “Check again”.'
         : resp?.status === 'unavailable' || resp?.status === 'budget_reached'
           ? 'The assessment is not available right now. Your categories stay pending and you can still take open tasks.'
           : resp?.status === 'consent_required'
@@ -55,9 +133,9 @@ export function AssessmentPanel({ exp, onChanged }: { exp: MyExperience; onChang
       </h2>
       {pending.length > 0 && (
         <>
-          <p className="mt-2 text-sm text-slate-600">
-            {pending.map((c) => categoryLabel(c.category)).join(', ')} {pending.length === 1 ? 'is' : 'are'} waiting for an assessment of your written answers. Until then you can
-            still take every open task.
+          <p className="mt-2 text-sm text-slate-600" data-testid="assessment-intro">
+            {pending.map((c) => categoryLabel(c.category)).join(', ')} {pending.length === 1 ? 'is' : 'are'} waiting for an assessment of your written answers. Because you
+            allowed AI processing, this starts automatically when you save your answers. Until then you can still take every open task.
           </p>
           <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-slate-600" data-testid="assessment-principles">
             {PRINCIPLES.map((p) => (
@@ -65,55 +143,59 @@ export function AssessmentPanel({ exp, onChanged }: { exp: MyExperience; onChang
             ))}
           </ul>
           <div className="mt-4">
-            <Button onClick={run} disabled={busy} data-testid="assess-run">
-              {busy ? 'Checking…' : 'Check my answers now'}
+            <Button variant="secondary" onClick={() => void run(false)} disabled={processing} data-testid="assess-run">
+              {processing ? 'Checking…' : 'Check again'}
             </Button>
           </div>
         </>
       )}
-      {notice && (
-        <div className="mt-4" data-testid="assess-notice">
-          <Alert tone="info">{notice}</Alert>
-        </div>
-      )}
-      {resp && resp.results.length > 0 && (
-        <ul className="mt-4 space-y-3" data-testid="assess-results">
-          {resp.results.map((r) => (
-            <ResultRow key={r.category} r={r} />
-          ))}
-        </ul>
-      )}
+      <div aria-live="polite" data-testid="assess-status">
+        {notice && (
+          <div className="mt-4" data-testid="assess-notice">
+            <Alert tone="info">{notice}</Alert>
+          </div>
+        )}
+        {rows.length > 0 && (
+          <ul className="mt-4 space-y-3" data-testid="assess-results">
+            {rows.map((r) => (
+              <ResultRow key={r.category} category={r.category} state={r.state} result={r.result} />
+            ))}
+          </ul>
+        )}
+      </div>
     </section>
   );
 }
 
-function ResultRow({ r }: { r: AssessmentResult }) {
+function ResultRow({ category, state, result }: { category: string; state: RowState; result: AssessmentResult | null }) {
   const tone =
-    r.outcome === 'qualified'
+    state === 'qualified'
       ? 'border-emerald-300 bg-emerald-50 text-emerald-900'
-      : r.outcome === 'not_qualified'
+      : state === 'not_qualified'
         ? 'border-slate-300 bg-slate-50 text-slate-800'
-        : 'border-amber-300 bg-amber-50 text-amber-900';
-  const label =
-    r.outcome === 'qualified' ? 'Active (self-reported)' : r.outcome === 'not_qualified' ? 'Not active yet' : r.outcome === 'needs_clarification' ? 'More detail needed' : 'Still pending';
+        : state === 'processing'
+          ? 'border-indigo-200 bg-indigo-50 text-indigo-900'
+          : 'border-amber-300 bg-amber-50 text-amber-900';
   return (
-    <li className={`rounded-lg border p-3 text-sm ${tone}`} data-testid={`assess-${r.category}`} data-outcome={r.outcome}>
+    <li className={`rounded-lg border p-3 text-sm ${tone}`} data-testid={`assess-${category}`} data-outcome={result?.outcome ?? state} data-state={state}>
       <p className="font-semibold">
-        {categoryLabel(r.category)}: {label}
+        {categoryLabel(category)}: <span data-testid={`assess-state-${category}`}>{ROW_LABEL[state]}</span>
       </p>
-      <p className="mt-1 text-xs">{r.message}</p>
-      {r.outcome === 'needs_clarification' && r.clarification_questions.length > 0 && (
+      {state === 'processing' && <p className="mt-1 text-xs">Checking your written answers now. This usually takes a few seconds.</p>}
+      {state === 'pending' && !result && <p className="mt-1 text-xs">Waiting to be checked. Your answers are saved.</p>}
+      {result && state !== 'processing' && <p className="mt-1 text-xs">{result.message}</p>}
+      {result && state === 'needs_clarification' && result.clarification_questions.length > 0 && (
         <ul className="mt-2 list-disc space-y-1 pl-5 text-xs" data-testid="assess-clarify">
-          {r.clarification_questions.map((q) => (
+          {result.clarification_questions.map((q) => (
             <li key={q}>{q}</li>
           ))}
         </ul>
       )}
-      {r.criteria.length > 0 && r.outcome !== 'qualified' && (
+      {result && result.criteria.length > 0 && state !== 'qualified' && state !== 'processing' && (
         <details className="mt-2 text-xs">
           <summary className="cursor-pointer font-medium">What we look for</summary>
           <ul className="mt-1 list-disc space-y-1 pl-5">
-            {r.criteria.map((c) => (
+            {result.criteria.map((c) => (
               <li key={c}>{c}</li>
             ))}
           </ul>

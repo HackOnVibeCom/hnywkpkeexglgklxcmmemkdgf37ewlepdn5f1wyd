@@ -131,10 +131,11 @@ function scripted(name, userText) {
 const openai = createServer((req, res) => {
   let body = '';
   req.on('data', (c) => (body += c));
-  req.on('end', () => {
+  req.on('end', async () => {
     const parsed = JSON.parse(body);
     oa.requests.push({ url: req.url, auth: req.headers.authorization, body: parsed, raw: body });
     const name = parsed.text?.format?.name;
+    if (oa.hook) { const h = oa.hook; oa.hook = null; await h(name); } // test hook: e.g. the tester withdraws consent while this request is in flight
     if (oa.mode === 'http500') { res.writeHead(500, { 'content-type': 'application/json' }); return res.end('{"error":{"message":"upstream exploded with a secret prompt echo"}}'); }
     if (oa.mode === 'refusal') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ status: 'completed', output: [{ type: 'message', content: [{ type: 'refusal', refusal: 'no' }] }], usage: { input_tokens: 10, output_tokens: 1 } })); }
     const text = oa.mode === 'malformed' ? '{"matches": "nope"' : JSON.stringify(scripted(name, parsed.input[1].content));
@@ -359,13 +360,17 @@ console.log('\n[4. consent withdrawal and the erasure events (real SQL, real fun
   const w = await call(fn, tokenOf(A1), { action: 'recommend' });
   ok(w.json.status === 'consent_required' && w.json.items.length === 0 && oaCount() === before, 'after withdrawal the tester gets consent_required and nothing is sent');
   ok((await aiProf(A1)).subject_ref === null && (await aiProf(A1)).profile.bio === null, 'the contract hands out no bio and no subject_ref any more');
-  // qualification decision policy
+  // qualification decision policy (product decision): withdrawing consent REMOVES the AI-derived decisions; the categories return to pending
+  ok((await catState(P1, 'tech_savvy')) === 'active', 'precondition: the professional category is active (decided by the AI assessment)');
   await setConsent(P1, false);
-  ok((await catState(P1, 'tech_savvy')) === 'active', 'an already recorded qualification stays in force after withdrawal (documented policy)');
+  ok((await catState(P1, 'tech_savvy')) === 'pending_assessment' && (await q('select count(*)::int n from public.category_qualifications where user_id=$1', [P1]))[0].n === 0, 'withdrawal deleted the recorded decision: the professional category is PENDING again');
+  ok((await catState(P1, 'students_learners')) === 'active', 'the general category is untouched');
+  const pfeed = await asUser(P1, () => q('select campaign_id, eligible, testing_mode from public.list_campaigns_v2()'));
+  ok(pfeed.filter((f) => f.testing_mode === 'targeted').every((f) => f.eligible === false) && pfeed.some((f) => f.testing_mode === 'open' && f.eligible === true), 'targeted campaigns are no longer reservable; Open Testing stays available');
   const pw = await call(fn, tokenOf(P1), { action: 'assess' });
-  ok(pw.json.status === 'consent_required' && pw.json.results.length === 0, 'but nothing new is assessed while consent is off');
+  ok(pw.json.status === 'consent_required' && pw.json.results.length === 0, 'and nothing is assessed while consent is off');
   await asUser(P1, () => q('select public.delete_my_experience($1)', ['tech_savvy']));
-  ok((await catState(P1, 'tech_savvy')) !== 'active', 'deleting the answers removes the decision');
+  ok((await catState(P1, 'tech_savvy')) !== 'active', 'deleting the answers also leaves no decision behind');
   // immediate user erasure RPC through the API
   const R = await mkUser();
   const drop = await fetch(`${REST_URL}/rest/v1/rpc/delete_my_ai_data`, { method: 'POST', headers: { authorization: `Bearer ${tokenOf(R)}`, 'content-type': 'application/json' }, body: '{}' });
@@ -446,10 +451,42 @@ console.log('\n[6. caps and kill switches (separate Deno instances)]');
   await nosvc.stop();
 }
 
+console.log('\n[6b. consent withdrawn WHILE a model request is in flight (real function, real SQL triggers)]');
+{
+  // assessment: the tester withdraws after the OpenAI request was sent
+  const W = await mkUser();
+  await setProfile(W, ['tech_savvy'], 'I tinker with computers.');
+  await saveAns(W, 'tech_savvy', answersOf('I use Python, git and VS Code every day and Postman to test APIs.', 'I built a small Flask API for my football league and deployed it on a cheap VPS myself.', 'Once the site returned 500 errors, I read the logs, found a missing environment variable and fixed it.', 'I am comfortable testing web apps and developer tools because I use them constantly.'));
+  await setConsent(W, true);
+  const n0 = oaCount();
+  oa.hook = async () => { await setConsent(W, false); };
+  const r = await call(fn, tokenOf(W), { action: 'assess' });
+  ok(oaCount() === n0 + 1, 'the request that was already on its way was sent (legitimately: consent was on when it left)');
+  ok(r.json.status === 'consent_required' && r.json.results.every((x) => x.outcome === 'pending'), 'but its result is not applied: the answer is consent_required and the category stays pending');
+  ok((await q('select count(*)::int n from public.category_qualifications where user_id=$1', [W]))[0].n === 0 && (await catState(W, 'tech_savvy')) === 'pending_assessment', 'no qualification decision exists for the tester who withdrew');
+  ok((await derivedRows(W)).a + (await derivedRows(W)).m + (await derivedRows(W)).n === 0, 'and no derived data was stored');
+  const n1 = oaCount();
+  const r2 = await call(fn, tokenOf(W), { action: 'assess' });
+  ok(r2.json.status === 'consent_required' && oaCount() === n1, 'a later request sends nothing');
+
+  // recommendations: withdrawal between step 1 and step 2 => step 2 is never sent
+  const V = await mkUser();
+  await campaign('open', [], 'Dev tool for API work', 'A developer tool for testing REST API endpoints with Python.');
+  await setProfile(V, ['students_learners'], 'Student.');
+  await saveAns(V, 'students_learners', answersOf('I study computer science and write backend code in Python every day.', 'I maintain an open source API in Python and use git for everything.', 'I built a Flask API with authentication for a hackathon project.', 'Developer tools and API products are what I enjoy testing the most.'));
+  await setConsent(V, true);
+  const m0 = oaCount();
+  oa.hook = async (name) => { if (name === 'tester_experience') await setConsent(V, false); };
+  const rv = await call(fn, tokenOf(V), { action: 'recommend' });
+  ok(oaCount() === m0 + 1 && rv.json.status === 'consent_required' && rv.json.items.length === 0, 'recommendations: consent withdrawn during step 1 => step 2 (the campaign-matching request) is NEVER sent and nothing is returned');
+  const dv = await derivedRows(V);
+  ok(dv.a + dv.m + dv.n === 0, 'and the analysis produced by step 1 was not kept');
+}
+
 console.log('\n[7. what the function is allowed to touch]');
 {
   const names = [...new Set(rpcLog.map((r) => r.name))].sort();
-  const allowed = ['ai_apply_erasure_events', 'ai_get_assessment_notes', 'ai_get_cache', 'ai_purge_user', 'ai_put_analysis', 'ai_put_assessment_note', 'ai_put_matches', 'ai_record_tokens', 'ai_reserve_run', 'list_campaigns_v2', 'service_get_ai_profile', 'service_record_qualification'];
+  const allowed = ['ai_apply_erasure_events', 'ai_consent_active', 'ai_get_assessment_notes', 'ai_get_cache', 'ai_purge_user', 'ai_put_analysis', 'ai_put_assessment_note', 'ai_put_matches', 'ai_record_tokens', 'ai_reserve_run', 'list_campaigns_v2', 'service_get_ai_profile', 'service_record_qualification'];
   // the test itself calls the bridge for delete_my_ai_data / service_record_qualification (user token): only look at the function's own roles
   const fnCalls = [...new Set(rpcLog.filter((r) => r.role === 'service_role' || r.name === 'list_campaigns_v2').map((r) => r.name))].sort();
   ok(fnCalls.every((n) => allowed.includes(n)), `the function only ever called allowed RPCs: ${fnCalls.join(', ')}`);

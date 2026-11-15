@@ -51,6 +51,7 @@ async function installAi(ctx, ai, be) {
       if (ai.fn === 'error') return send({ error: 'boom' }, 500);
       if (ai.fn === 'missing') return send({ message: 'Function not found' }, 404);
       if (b?.action === 'assess') {
+        if (ai.delay) await new Promise((res) => setTimeout(res, ai.delay));
         const r = typeof ai.assess === 'function' ? ai.assess(be) : ai.assess;
         return send(r);
       }
@@ -179,7 +180,7 @@ console.log('\n[P1] Consent withdrawal erases AI-derived data; the policy about 
   const { page, ctx } = await open(1280, be, ai, '/profile');
   await page.getByTestId('ai-consent-toggle').waitFor();
   const pol = await page.getByTestId('ai-consent-policy').innerText();
-  ok(/erases the analysis and recommendations/.test(pol) && /qualification result you already received/.test(pol) && /stays in place/.test(pol) && /delete your answers/.test(pol) && /waits as pending/.test(pol), 'the consent card states exactly what withdrawal does, including the existing qualification decision');
+  ok(/erases the analysis and recommendations/.test(pol) && /goes back to Pending/.test(pol) && /qualified by an AI assessment/.test(pol) && /still take every\s+open task/.test(pol) && /anonymous account, tester profile, written answers and credits are kept/.test(pol), 'the consent card states exactly what withdrawal does: derived data erased, AI-qualified categories return to Pending, open tasks / account / answers / credits kept');
   await page.getByTestId('ai-consent-toggle').click();
   await page.getByTestId('ai-consent-state').filter({ hasText: 'OFF' }).waitFor();
   ok(be.s.consentCalls.at(-1) === false, 'the canonical consent RPC (set_ai_consent) was called with granted=false');
@@ -204,22 +205,22 @@ console.log('\n[P2] Professional assessment: the browser only ASKS, the server d
   ok(/Tech-Savvy Users is waiting for an assessment/.test(pt) && /still take every open task/.test(pt), 'a pending professional category shows the panel (and says open tasks stay available)');
   const pr = await page.getByTestId('assessment-principles').innerText();
   ok(/do not need a degree/.test(pr) && /only write what is true/.test(pr) && /not a verification of any credential/.test(pr), 'transparent principles: no degree/title/employer needed, only write what is true, self-reported not verified');
-  ok(ai.fnCalls.length === 0, 'nothing is assessed until the tester asks');
+  ok(ai.fnCalls.length === 0, 'a page load never starts an assessment: no request until the tester saves answers or asks');
   await page.screenshot({ path: SHOTS + '/ai-assessment-panel.png', fullPage: true });
   await page.getByTestId('assess-run').click();
-  await page.getByTestId('assess-tech_savvy').waitFor();
+  await page.locator('[data-testid="assess-tech_savvy"][data-state="qualified"]').waitFor();
   ok(JSON.stringify(ai.fnCalls[0].body) === '{"action":"assess"}', 'the request is only {"action":"assess"}: no category, no status, no decision');
   const rt = await page.getByTestId('assess-tech_savvy').innerText();
-  ok(/Active \(self-reported\)/.test(rt) && /self-reported answers, not on verified professional credentials/.test(rt), 'the result is labelled self-reported, not verified');
+  ok(/Qualified \(self-reported\)/.test(rt) && /self-reported answers, not on verified professional credentials/.test(rt), 'the result is labelled self-reported, not verified');
   const activated = await page.waitForFunction(() => document.querySelector('[data-testid="status-tech_savvy"]')?.getAttribute('data-state') === 'active', null, { timeout: 5000 }).then(() => true).catch(() => false);
   ok(activated, 'the profile reloaded and the category pill shows ACTIVE (the state comes from the server record, not from the AI response)');
   ok(noise(errors).length === 0, 'no console errors', errors.join(' | '));
   await ctx.close();
 
   for (const [label, resp, re] of [
-    ['needs clarification', ASSESS([assessRow('tech_savvy', 'needs_clarification', { clarification_questions: ['Which tools did you use?', 'What did you build yourself?'] })]), /More detail needed/],
-    ['not qualified (kind)', ASSESS([assessRow('tech_savvy', 'not_qualified', { message: 'We could not yet see hands-on experience. That is fine: you can still take open tasks. This is based on your self-reported answers.' })]), /Not active yet/],
-    ['pending (error)', ASSESS([assessRow('tech_savvy', 'pending')]), /Still pending/],
+    ['needs clarification', ASSESS([assessRow('tech_savvy', 'needs_clarification', { clarification_questions: ['Which tools did you use?', 'What did you build yourself?'] })]), /Needs clarification/],
+    ['not qualified (kind)', ASSESS([assessRow('tech_savvy', 'not_qualified', { message: 'We could not yet see hands-on experience. That is fine: you can still take open tasks. This is based on your self-reported answers.' })]), /Not qualified yet/],
+    ['pending (error)', ASSESS([assessRow('tech_savvy', 'pending')]), /Pending/],
     ['rate limited', ASSESS([], 'rate_limited'), /allowance/],
     ['unavailable', ASSESS([], 'unavailable'), /not available right now/],
   ]) {
@@ -227,6 +228,8 @@ console.log('\n[P2] Professional assessment: the browser only ASKS, the server d
     const ai2 = mkAi({ assess: resp });
     const t = await open(1280, be2, ai2, '/profile');
     await t.page.getByTestId('assess-run').click();
+    while (ai2.fnCalls.length === 0) await new Promise((r) => setTimeout(r, 50));
+    await t.page.getByTestId('assess-run').filter({ hasText: 'Check again' }).waitFor(); // the request finished
     await t.page.getByTestId('assessment-panel').getByText(re).first().waitFor();
     ok(true, `${label}: shown honestly`);
     if (label === 'needs clarification') {
@@ -248,6 +251,103 @@ console.log('\n[P2] Professional assessment: the browser only ASKS, the server d
   await t2.page.getByTestId('ai-consent-toggle').waitFor();
   ok((await t2.page.getByTestId('assessment-panel').count()) === 0, 'without consent the panel is not shown');
   await t2.ctx.close();
+}
+
+console.log('\n[P3] Automatic assessment after saving four answers (only with consent), clear states, no repeats')
+{
+  const answerAll = async (page, cat) => {
+    const panel = page.getByTestId('experience-' + cat);
+    await panel.getByTestId('answer-q1').waitFor();
+    const texts = ['I use Python, git and VS Code every day for my own projects.', 'I built a small Flask API for my football league and deployed it.', 'The site returned errors, I read the logs and fixed an environment variable.', 'I enjoy testing developer tools and web apps because I use them daily.'];
+    for (const [i, t] of texts.entries()) await panel.getByTestId('answer-q' + (i + 1)).fill(t);
+    await panel.getByTestId('save-answers').click();
+    await panel.getByTestId('experience-saved').waitFor();
+  };
+  const stateOf = (page, cat) => page.getByTestId('assess-state-' + cat).innerText();
+
+  // 1. consent ON: saving starts ONE automatic check, no click needed; Processing is shown, then Qualified
+  const be = mkBe({ tester: tester(['tech_savvy', 'students_learners']), answered: ['students_learners'] });
+  const ai = mkAi({ delay: 700, assess: (b) => { b.s.qualified.add('tech_savvy'); return ASSESS([assessRow('tech_savvy', 'qualified')]); } });
+  const t = await open(1280, be, ai, '/profile?answers=tech_savvy');
+  await answerAll(t.page, 'tech_savvy');
+  await t.page.locator('[data-testid="assess-tech_savvy"][data-state="processing"]').waitFor({ timeout: 4000 });
+  ok(/Processing/.test(await stateOf(t.page, 'tech_savvy')), 'while the check runs the category shows PROCESSING');
+  await t.page.screenshot({ path: SHOTS + '/ai-assessment-processing.png', fullPage: true });
+  await t.page.locator('[data-testid="assess-tech_savvy"][data-state="qualified"]').waitFor({ timeout: 6000 });
+  ok(/Qualified/.test(await stateOf(t.page, 'tech_savvy')), 'then QUALIFIED (self-reported)');
+  ok(ai.fnCalls.length === 1 && JSON.stringify(ai.fnCalls[0].body) === '{"action":"assess"}', 'exactly ONE automatic request, carrying only {"action":"assess"} (no category, hash, status or consent flag from the browser)');
+  await t.page.waitForFunction(() => document.querySelector('[data-testid="status-tech_savvy"]')?.getAttribute('data-state') === 'active', null, { timeout: 5000 });
+  ok(true, 'the category pill is ACTIVE because the reloaded server state says so');
+  await t.page.screenshot({ path: SHOTS + '/ai-assessment-qualified.png', fullPage: true });
+  // a page reload never repeats a paid request
+  await t.page.reload();
+  await t.page.getByTestId('ai-consent-toggle').waitFor();
+  await new Promise((r) => setTimeout(r, 600));
+  ok(ai.fnCalls.length === 1, 'reloading the page does NOT start another assessment');
+  ok(noise(t.errors).length === 0, 'no console errors', t.errors.join(' | '));
+  await t.ctx.close();
+
+  // 2. needs clarification: shown clearly; a reload does not call again; the manual button does
+  const be2 = mkBe({ tester: tester(['business_office']), answered: [] });
+  const ai2 = mkAi({ assess: ASSESS([assessRow('business_office', 'needs_clarification', { clarification_questions: ['Which tools do you use daily?'] })]) });
+  const t2 = await open(1280, be2, ai2, '/profile?answers=business_office');
+  await answerAll(t2.page, 'business_office');
+  await t2.page.locator('[data-testid="assess-business_office"][data-state="needs_clarification"]').waitFor({ timeout: 6000 });
+  ok(/Needs clarification/.test(await stateOf(t2.page, 'business_office')) && (await t2.page.getByTestId('assess-clarify').locator('li').count()) === 1, 'NEEDS CLARIFICATION is shown with the follow-up question');
+  ok((await t2.page.getByTestId('status-business_office').getAttribute('data-state')) === 'pending_assessment', 'and the category itself stays Pending (nothing was invented)');
+  await t2.page.reload();
+  await t2.page.getByTestId('assess-run').waitFor();
+  await new Promise((r) => setTimeout(r, 600));
+  ok(ai2.fnCalls.length === 1 && /Pending/.test(await stateOf(t2.page, 'business_office')), 'after a reload the category shows PENDING and no extra request was made');
+  await t2.page.getByTestId('assess-run').click();
+  await t2.page.waitForFunction(() => document.querySelector('[data-testid="assess-business_office"]')?.getAttribute('data-state') === 'needs_clarification');
+  ok(ai2.fnCalls.length === 2, 'the manual "Check again" button asks once more');
+  await t2.ctx.close();
+
+  // 3. consent OFF: saving never calls the AI; turning consent on afterwards checks the waiting category once
+  const be3 = mkBe({ tester: tester(['tech_savvy']), answered: [], consent: false });
+  const ai3 = mkAi({ assess: (b) => { b.s.qualified.add('tech_savvy'); return ASSESS([assessRow('tech_savvy', 'qualified')]); } });
+  const t3 = await open(1280, be3, ai3, '/profile?answers=tech_savvy');
+  await answerAll(t3.page, 'tech_savvy');
+  await new Promise((r) => setTimeout(r, 600));
+  ok(ai3.fnCalls.length === 0 && (await t3.page.getByTestId('assessment-panel').count()) === 0, 'consent OFF: saving four answers sends NOTHING to the AI service and shows no assessment panel');
+  ok(/allow AI processing/.test(await t3.page.getByTestId('experience-saved').innerText()), 'the tester is told that AI processing must be allowed for the assessment');
+  await t3.page.getByTestId('ai-consent-toggle').click();
+  await t3.page.locator('[data-testid="assess-tech_savvy"][data-state="qualified"]').waitFor({ timeout: 6000 });
+  ok(ai3.fnCalls.length === 1, 'turning AI processing ON checks the waiting professional category once, automatically');
+  await t3.ctx.close();
+
+  // 4. a general category never triggers an assessment
+  const be4 = mkBe({ tester: tester(['students_learners']), answered: [] });
+  const ai4 = mkAi();
+  const t4 = await open(1280, be4, ai4, '/profile?answers=students_learners');
+  await answerAll(t4.page, 'students_learners');
+  await new Promise((r) => setTimeout(r, 600));
+  ok(ai4.fnCalls.length === 0 && (await t4.page.getByTestId('status-students_learners').getAttribute('data-state')) === 'active', 'a general category becomes active on its answers alone and is never assessed');
+  await t4.ctx.close();
+
+  // 5. several professional categories: each shown with its own state
+  const be5 = mkBe({ tester: tester(['tech_savvy', 'founders_builders', 'business_office']), answered: ['tech_savvy', 'founders_builders', 'business_office'] });
+  const ai5 = mkAi({ assess: (b) => { b.s.qualified.add('tech_savvy'); return ASSESS([assessRow('tech_savvy', 'qualified'), assessRow('founders_builders', 'needs_clarification', { clarification_questions: ['What did you build yourself?'] }), assessRow('business_office', 'not_qualified')]); } });
+  const t5 = await open(1280, be5, ai5, '/profile');
+  await t5.page.getByTestId('assess-run').click();
+  await t5.page.locator('[data-testid="assess-business_office"][data-state="not_qualified"]').waitFor();
+  ok(/Qualified/.test(await stateOf(t5.page, 'tech_savvy')) && /Needs clarification/.test(await stateOf(t5.page, 'founders_builders')) && /Not qualified yet/.test(await stateOf(t5.page, 'business_office')), 'three professional categories each show their own independent state');
+  await t5.ctx.close();
+
+  // 6. withdrawing consent: AI-qualified category goes back to Pending, open tasks stay
+  const be6 = mkBe({ tester: tester(['tech_savvy', 'students_learners']), answered: ['tech_savvy', 'students_learners'], qualified: ['tech_savvy'] });
+  const ai6 = mkAi();
+  const t6 = await open(1280, be6, ai6, '/profile');
+  await t6.page.getByTestId('ai-consent-toggle').waitFor();
+  ok((await t6.page.getByTestId('status-tech_savvy').getAttribute('data-state')) === 'active', 'precondition: the professional category is active');
+  await t6.page.getByTestId('ai-consent-toggle').click();
+  await t6.page.getByTestId('ai-consent-state').filter({ hasText: 'OFF' }).waitFor();
+  await t6.page.waitForFunction(() => document.querySelector('[data-testid="status-tech_savvy"]')?.getAttribute('data-state') === 'pending_assessment', null, { timeout: 5000 });
+  ok(true, 'after withdrawal the professional category shows PENDING again (the server removed the decision)');
+  ok((await t6.page.getByTestId('status-students_learners').getAttribute('data-state')) === 'active' && /open task|Every open task|every open task/i.test(await body(t6.page)), 'the general category stays active and open tasks are still offered');
+  ok(ai6.fnCalls.length === 0 && ai6.deletes === 1, 'withdrawing sends nothing to the AI service and erases the AI-derived data');
+  await t6.ctx.close();
 }
 
 console.log('\n[M1] Mobile layout');

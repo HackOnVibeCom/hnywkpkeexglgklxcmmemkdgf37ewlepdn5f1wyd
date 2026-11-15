@@ -74,3 +74,10 @@ export async function sha256Hex(s: string): Promise<string> {
 }
 
 export const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/** Thrown when consent is no longer active at the moment a model request was about to be sent: nothing is sent, nothing is stored. */
+export class ConsentWithdrawn extends Error {
+  constructor() {
+    super('consent_withdrawn');
+  }
+}

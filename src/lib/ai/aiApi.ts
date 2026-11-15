@@ -98,7 +98,7 @@ export async function requestAssessment(): Promise<AssessmentResponse> {
 /**
  * Erase what the AI derived about me (analysis, verdicts, clarification notes) right now. Best effort and a no-op unless the AI
  * build flag is on: the server also erases through the contract's erasure events and whenever it sees no consent.
- * It never touches qualification decisions (see docs/AI_MATCHING.md "Consent withdrawal").
+ * It never touches qualification decisions itself: withdrawing consent removes them in the database (migration 20261115000600), see docs/AI_MATCHING.md section 6.
  */
 export async function deleteMyAiData(): Promise<void> {
   if (!AI_ENABLED) return;

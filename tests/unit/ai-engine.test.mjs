@@ -95,8 +95,11 @@ function userWorld({ consent = true, ready = true, bio = '', categories = ['tech
     recordTokens: async (u) => { w.tokens.push(u); },
     callModel: (r) => w.model(r),
     purgeDerived: async () => { w.purges++; w.cache = { subject: null, analysis: null, matches: [] }; },
+    // Live consent for exactly this subject_ref (tests flip w.consent / w.subject mid-run to simulate a withdrawal).
+    consentActive: async (s) => { w.consentChecks.push(s); if (w.consentCheckFails) throw new Error('db down'); return w.consent && s === w.subject; },
     log: (c) => w.logs.push(c),
   };
+  w.consentChecks = [];
   return w;
 }
 const names = (r, w) => r.items.map((x) => w.feed.find((f) => f.campaign_id === x.campaign_id).project_name);
@@ -443,6 +446,7 @@ console.log('\n[adapter to the profile workstream contract v1]');
   ok(ai.consent && ai.targets.length === 1 && ai.targets[0].category === 'tech_savvy' && ai.targets[0].answers_hash === 'a'.repeat(64) && ai.targets[0].question_version === 1, 'assessment targets: ONLY professional categories in pending_assessment, with the version and hash the decision must quote');
   ok(mapAssessmentInput(contract({ consent: { ai_processing: false } })).targets.length === 0, 'no assessment targets without consent');
   const w = userWorld({ bio: '', feed: [camp(DEV)] });
+  w.subject = '11111111-1111-4111-8111-111111111111';
   w.deps.getProfileInput = async () => mapContractProfile(contract({
     profile: { bio: 'x', categories: ['students_learners'], updated_at: 'x' },
     categories: [cat('students_learners', 'active', { answers: [{ question_id: 'q1', question: 'What do you build?', answer: 'I build REST APIs in Python every day.' }] })],
@@ -533,7 +537,89 @@ console.log('[review hardening: text channel and request bounds]');
   ok(!/[\u200b\u00ad]/.test(z.forModel.bio) && /ignore nothing/.test(z.forModel.bio), 'invisible format characters are removed from tester text before anything is sent or hashed');
 }
 
-console.log('\n[contracts: untouched money/eligibility logic and the exact database surface]');
+console.log('\n\n[consent is re-read immediately before EVERY model request]');
+{
+  const feed = mkFeed();
+  const base = { bio: 'Backend developer.', categories: ['tech_savvy'], answers: { tech_savvy: { 1: 'I use git and Python every day.', 2: 'I built a Flask API for inventory.' } }, feed };
+  // normal run: two model calls (analysis + matches), consent checked before each
+  const a = userWorld(base);
+  const ra = await recommend(a.deps);
+  ok(ra.status === 'ok' && a.model.log.length === 2 && a.consentChecks.length === 2, 'a normal run makes two model requests and checks consent before each of them (' + a.consentChecks.length + ' checks)');
+
+  // withdrawn between the start of the run and the FIRST model request: nothing is sent
+  const b = userWorld(base);
+  const gp = b.deps.getProfileInput;
+  b.deps.getProfileInput = async () => { const r = await gp(); b.consent = false; return r; };
+  const rb = await recommend(b.deps);
+  ok(b.model.log.length === 0 && rb.status === 'consent_required' && rb.items.length === 0 && b.purges >= 1, 'consent withdrawn after the run started but before the first request: NO model request is made, derived data is purged');
+
+  // withdrawn WHILE the first request is in flight: the second request is not sent
+  const c = userWorld(base);
+  const m1 = c.model;
+  c.model = async (req) => { const r = await m1(req); if (req.name === 'tester_experience') c.consent = false; return r; };
+  const rc = await recommend(c.deps);
+  ok(m1.log.length === 1 && rc.status === 'consent_required' && rc.items.length === 0 && c.purges >= 1, 'consent withdrawn during step 1: the step-2 request is NOT sent and nothing is returned');
+  ok(c.cache.matches.length === 0, 'and no verdict is cached for the withdrawn tester');
+
+  // consent re-granted under a NEW subject_ref mid-run is not the same consent
+  const d = userWorld(base);
+  const md = d.model;
+  d.model = async (req) => { const r = await md(req); if (req.name === 'tester_experience') d.subject = 'sub-rotated'; return r; };
+  const rd = await recommend(d.deps);
+  ok(md.log.length === 1 && rd.status === 'consent_required', 'a rotated subject_ref (withdrawn and granted again) is not accepted as the same consent');
+
+  // the consent check itself failing => fail closed
+  const e = userWorld(base);
+  e.consentCheckFails = true;
+  const re = await recommend(e.deps);
+  ok(e.model.log.length === 0 && re.status === 'unavailable' && re.items.length === 0, 'if the consent check cannot be performed, nothing is sent (fails closed) and the plain list is unaffected');
+
+  // a cached answer needs no model request, so nothing is sent anywhere
+  const f = userWorld(base);
+  await recommend(f.deps);
+  f.consentChecks.length = 0;
+  const rf = await recommend(f.deps);
+  ok(rf.from_cache && f.consentChecks.length === 0 && f.model.log.length === 2, 'a fully cached run sends nothing (and needs no further consent check)');
+}
+
+console.log('\n\n[quality gates the product asked for: no stereotyping, no unrelated filler, independence from eligibility]');
+{
+  const feed = mkFeed();
+  // E: a student describing ADVANCED programming experience is judged on what they wrote, not on the label "student"
+  const stu = userWorld({
+    bio: 'Third-year student.', categories: ['students_learners'], feed,
+    answers: { students_learners: { 1: 'I study computer science and write backend code in Python every day.', 2: 'I maintain an open-source API in Python and use git, Docker and Kubernetes for deployments.', 3: 'I built a Flask API with auth and a React admin panel for a hackathon.', 4: 'Developer tools and REST API products are what I enjoy testing.' } },
+  });
+  const rs = await recommend(stu.deps);
+  const sent = JSON.stringify(stu.model.log.map((r) => r.user)); // what the TESTER side of the request contains
+  ok(names(rs, stu).includes('API Debugger'), 'E: a student with advanced programming experience receives the technical (developer) recommendation');
+  ok(!/\bbeginner\b|\bnovice\b|entry[- ]level|junior/i.test(sent), 'E: the model is never told the tester is a beginner/novice/junior because of the category label');
+  ok(!names(rs, stu).includes('FreshCart') && !names(rs, stu).includes('PlayHub') && !names(rs, stu).includes('InvoiceEase'), 'E: and the student is not handed unrelated student-ish campaigns either');
+  const none = userWorld({ bio: 'Student.', categories: ['students_learners'], feed, answers: { students_learners: { 1: 'I study biology and chemistry at university.', 2: 'I use a lab notebook and a calculator.', 3: 'I wrote a report on enzymes for my class.' } } });
+  const rn = await recommend(none.deps);
+  ok(rn.status === 'ok' && rn.items.length === 0, 'E: a student with no technical text is NOT labelled technical: the honest empty list');
+
+  // F: unrelated campaigns never appear in "Recommended for you"; the empty state is honest, nothing is padded
+  const devAnswers = { tech_savvy: { 1: 'I use git and Python every day.', 2: 'I built a Flask API for inventory.' } };
+  const dev = userWorld({ bio: 'Backend developer.', categories: ['tech_savvy'], feed, answers: devAnswers });
+  const rd = await recommend(dev.deps);
+  ok(JSON.stringify(names(rd, dev)) === '["API Debugger"]', 'F: only the genuinely relevant campaign is recommended; invoicing, groceries and games are absent');
+  const onlyUnrelated = userWorld({ bio: 'Backend developer.', categories: ['tech_savvy'], feed: [camp(INV), camp(GRO), camp(GAME)], answers: devAnswers });
+  const ru = await recommend(onlyUnrelated.deps);
+  ok(ru.status === 'ok' && ru.items.length === 0 && ru.evaluated === 3, 'F: when nothing is relevant the list is empty (3 evaluated, 0 recommended): no filler to reach a minimum');
+
+  // G: the AI layer cannot widen what the server allows
+  const targeted = camp({ project_name: 'Pro Tool', description: 'A developer tool for REST API testing in Python.', testing_mode: 'targeted', target_categories: ['tech_savvy'], eligible: false, fit: 'not_eligible' });
+  const mixed = [targeted, camp(DEV)];
+  const g = userWorld({ bio: 'Backend developer.', categories: ['tech_savvy'], feed: mixed, answers: devAnswers });
+  const rg = await recommend(g.deps);
+  ok(!rg.items.some((i) => i.campaign_id === targeted.campaign_id) && !/Pro Tool/.test(JSON.stringify(g.model.log)), 'G: a Targeted campaign the server marks NOT eligible is neither sent to the model nor recommended, however relevant it looks');
+  const off = userWorld({ bio: 'x'.repeat(40), categories: ['tech_savvy'], feed: mixed, answers: devAnswers, consent: false });
+  const roff = await recommend(off.deps);
+  ok(roff.status === 'consent_required' && off.feed.length === 2 && off.model.log.length === 0, 'G: without consent there are no recommendations, nothing is sent, and the server-side feed itself is untouched');
+}
+
+console.log('\n\n[contracts: untouched money/eligibility logic and the exact database surface]');
 {
   ok(Object.keys(CATEGORY_LABELS).length === 5, 'five category labels');
   const dir = 'supabase/functions/_shared/aiMatching';
@@ -541,7 +627,7 @@ console.log('\n[contracts: untouched money/eligibility logic and the exact datab
   ok(!/start_test|submit_test|create_campaign|create_project|cancel_campaign|settle_|claim_referral|credit_ledger|credit_balance|submit_screening|save_tester_profile|save_experience_answers|set_ai_consent|delete_my_experience/.test(src), 'AI code never calls (or even names) reservation, submission, credit, referral, profile-write, consent-write or answer-delete functions');
   const rpcs = [...src.matchAll(/rpc(?:<[^>]*>)?\(\s*(?:service\(\)|caller|client),\s*'([a-z_0-9]+)'/g)].map((m) => m[1]);
   const set = [...new Set(rpcs)].sort().join();
-  ok(set === ['ai_apply_erasure_events', 'ai_get_assessment_notes', 'ai_get_cache', 'ai_purge_user', 'ai_put_analysis', 'ai_put_assessment_note', 'ai_put_matches', 'ai_record_tokens', 'ai_reserve_run', 'list_campaigns_v2', 'service_get_ai_profile', 'service_record_qualification'].sort().join(), `the Edge Function reaches the database through exactly these RPCs: ${set}`);
+  ok(set === ['ai_apply_erasure_events', 'ai_consent_active', 'ai_get_assessment_notes', 'ai_get_cache', 'ai_purge_user', 'ai_put_analysis', 'ai_put_assessment_note', 'ai_put_matches', 'ai_record_tokens', 'ai_reserve_run', 'list_campaigns_v2', 'service_get_ai_profile', 'service_record_qualification'].sort().join(), `the Edge Function reaches the database through exactly these RPCs: ${set}`);
   ok(!/\.from\(|insert into|update public|delete from/i.test(readFileSync('supabase/functions/ai-match/index.ts', 'utf8')), 'the function never touches a table directly: RPCs only');
   ok(!/sk-[A-Za-z0-9]{10,}/.test(src), 'no API key material in the source');
 }

@@ -108,6 +108,7 @@ function common(userId: string, kind: 'match' | 'assess'): CommonDeps {
     purgeDerived: async () => { await rpc(service(), 'ai_purge_user', { p_user: userId }); },
     reserveRun: (calls) => rpc<ReserveResult>(service(), 'ai_reserve_run', { p_user: userId, p_kind: kind, p_calls: calls, ...caps() }),
     recordTokens: async (u) => { await rpc(service(), 'ai_record_tokens', { p_user: userId, p_kind: kind, p_input: u.input_tokens, p_output: u.output_tokens }); },
+    consentActive: async (subjectRef) => (await rpc<boolean>(service(), 'ai_consent_active', { p_user: userId, p_subject_ref: subjectRef })) === true,
     callModel,
     log: (code) => console.error(`ai-match: ${code}`), // coarse code only
   };

@@ -21,7 +21,7 @@
 --   6. User RPC (authenticated)     delete_my_ai_data(): erase everything the AI derived about the caller, immediately.
 --   7. Service RPCs (service_role ONLY; the Edge Function passes a user id it verified from the caller's JWT):
 --      ai_get_cache, ai_put_analysis, ai_put_matches, ai_get_assessment_notes, ai_put_assessment_note, ai_purge_user,
---      ai_apply_erasure_events, ai_reserve_run, ai_record_tokens.
+--      ai_apply_erasure_events, ai_reserve_run, ai_record_tokens, ai_consent_active.
 --
 -- All new tables: RLS on, NO policy, NO grant => reachable only through the RPCs above. Every derived row stores the
 -- subject_ref it was derived under; a row whose subject_ref is not the tester's CURRENT one is never served (consent granted
@@ -114,7 +114,8 @@ revoke all on public.ai_erasure_cursor   from anon, authenticated;
 -- 6. User RPC: erase what the AI derived about ME (analysis, verdicts, clarification notes). Usage counters are kept (they
 --    are the cost ceiling, not personal content). The UI calls this when the tester switches AI off or deletes answers; the
 --    erasure-event poller below is the contract-level safety net for every path (including ones that never call this).
---    It does NOT touch qualification decisions (owned by the profile workstream; see docs/AI_MATCHING.md "Consent withdrawal").
+--    It does NOT touch qualification decisions (owned by the profile workstream). Withdrawing consent removes them through
+--    migration 20261115000600 (docs/AI_MATCHING.md "Consent withdrawal").
 -- ---------------------------------------------------------------------------
 create or replace function public.delete_my_ai_data()
 returns jsonb
@@ -159,6 +160,22 @@ as $$
       select jsonb_agg(jsonb_build_object('campaign_id', m.campaign_id, 'profile_hash', m.profile_hash,
                                           'campaign_hash', m.campaign_hash, 'result', m.result))
       from public.ai_match_cache m where m.user_id = p_user and m.subject_ref = p_subject_ref), '[]'::jsonb))
+$$;
+
+-- Is AI processing CURRENTLY granted for exactly this (user, subject_ref)? The Edge Function calls it immediately before EVERY
+-- OpenAI request (not only at the start of a run), so a withdrawal that happens while a run is in progress stops the next
+-- model call. Read-only, no side effects, never returns data.
+create or replace function public.ai_consent_active(p_user uuid, p_subject_ref uuid)
+returns boolean
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+begin
+  -- plpgsql (late-bound): this migration must not depend on migration 8 at creation time.
+  return exists (select 1 from public.ai_consents c where c.user_id = p_user and c.ai_processing and c.subject_ref = p_subject_ref);
+end;
 $$;
 
 create or replace function public.ai_put_analysis(p_user uuid, p_subject_ref uuid, p_input_hash text, p_analysis jsonb, p_model text)
@@ -412,6 +429,7 @@ $$;
 revoke all on function public.delete_my_ai_data()                             from public, anon;
 grant execute on function public.delete_my_ai_data()                          to authenticated;
 
+revoke all on function public.ai_consent_active(uuid, uuid)                   from public, anon, authenticated;
 revoke all on function public.ai_get_cache(uuid, uuid)                        from public, anon, authenticated;
 revoke all on function public.ai_put_analysis(uuid, uuid, text, jsonb, text)  from public, anon, authenticated;
 revoke all on function public.ai_put_matches(uuid, uuid, jsonb)               from public, anon, authenticated;
@@ -421,6 +439,7 @@ revoke all on function public.ai_purge_user(uuid)                             fr
 revoke all on function public.ai_apply_erasure_events(integer)                from public, anon, authenticated;
 revoke all on function public.ai_reserve_run(uuid, text, integer, integer, integer, bigint, integer) from public, anon, authenticated;
 revoke all on function public.ai_record_tokens(uuid, text, bigint, bigint)    from public, anon, authenticated;
+grant execute on function public.ai_consent_active(uuid, uuid)                to service_role;
 grant execute on function public.ai_get_cache(uuid, uuid)                     to service_role;
 grant execute on function public.ai_put_analysis(uuid, uuid, text, jsonb, text) to service_role;
 grant execute on function public.ai_put_matches(uuid, uuid, jsonb)            to service_role;

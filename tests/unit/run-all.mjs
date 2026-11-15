@@ -11,7 +11,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const suites = ['matching.test.mjs', 'ai-engine.test.mjs', 'ai-assess.test.mjs'];
+const suites = ['matching.test.mjs', 'ai-engine.test.mjs', 'ai-assess.test.mjs', 'smoke-script.test.mjs'];
 let bad = false;
 let total = 0;
 for (const s of suites) {

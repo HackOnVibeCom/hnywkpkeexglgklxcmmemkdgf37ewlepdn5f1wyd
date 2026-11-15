@@ -316,34 +316,87 @@ console.log('\n[professional qualification end to end: contract -> adapter -> se
   ok(await failsWith(() => decide(T, 'tech_savvy', 'qualified', { assessment: { model: 'm', answers: 'my raw answer text' } }), 'invalid_assessment'), 'an assessment payload with any key other than model/rubric_version/summary/confidence (e.g. answer text) is refused');
 }
 
-console.log('\n[consent withdrawal vs. recorded qualification: the documented policy, tested]');
+console.log('\n[consent withdrawal removes AI-derived decisions, recommendations and cached analysis (migration 10)]');
 {
   const T = await mk();
   const O = await mk();
-  await profile(T, ['tech_savvy']);
+  await profile(T, ['tech_savvy', 'founders_builders', 'students_learners'], 'I build things');
   await save(T, 'tech_savvy', ANS('tech'));
+  await save(T, 'founders_builders', ANS('founder'));
+  await save(T, 'students_learners', ANS('study'));
   await consent(T, true);
   const targeted = await createV2(O, 'targeted', ['tech_savvy'], 'Pro tool 2');
+  const open = await createV2(await mk(), 'open', [], 'Open task');
+  const s1 = await subjectOf(T);
+  ok(await svc(() => q('select public.ai_consent_active($1,$2) r', [T, s1])).then((r) => r[0].r) === true, 'ai_consent_active: true for the current consent and subject_ref');
+  ok(await svc(() => q('select public.ai_consent_active($1,$2) r', [T, '00000000-0000-4000-8000-000000000000'])).then((r) => r[0].r) === false, 'ai_consent_active: false for any other subject_ref');
   await decide(T, 'tech_savvy', 'qualified');
-  const s = await subjectOf(T);
-  await putAn(T, s, H('a'));
+  await decide(T, 'founders_builders', 'not_qualified');
+  ok((await state(T, 'tech_savvy')) === 'active' && (await state(T, 'founders_builders')) === 'not_qualified', 'precondition: one qualified and one not_qualified decision are recorded');
+  ok((await feed(T)).find((f) => f.campaign_id === targeted).eligible === true, 'precondition: the targeted campaign is reservable');
+  await putAn(T, s1, H('a'));
+  await putMatches(T, s1, [{ campaign_id: open, profile_hash: H('a'), campaign_hash: H('1'), result: { verdict: 'strong', recommended: true } }]);
+  await putNote(T, s1, 'business_office', H('c'));
+  const creditsBefore = await bal(T);
+
   await consent(T, false);
+  ok((await q('select count(*)::int n from public.category_qualifications where user_id=$1', [T]))[0].n === 0, '1. withdrawal deletes EVERY recorded decision of that tester (qualified and not_qualified), in the same transaction');
+  ok((await state(T, 'tech_savvy')) === 'pending_assessment' && (await state(T, 'founders_builders')) === 'pending_assessment', '2. the previously decided professional categories return to PENDING');
+  ok((await state(T, 'students_learners')) === 'active', '3. a general category is unaffected (it never needed a decision)');
+  const mine = await my(T);
+  ok(mine.participation_ready === true && mine.has_profile === true, '4. the anonymous account, the profile and participation_ready are preserved');
+  ok(!mine.active_categories.includes('tech_savvy') && mine.active_categories.includes('students_learners'), '5. only the general category is still active');
+  const f1 = await feed(T);
+  ok(f1.find((f) => f.campaign_id === targeted).eligible === false && f1.find((f) => f.campaign_id === open).eligible === true, '6. the targeted campaign is no longer reservable (server-side) while Open Testing stays available');
+  ok(await failsWith(() => as(T, () => q('select public.start_test($1)', [targeted])), 'not_eligible'), '7. and the database trigger refuses a reservation of it');
+  ok(!!(await as(T, () => q('select public.start_test($1) r', [open])))[0].r, '8. the tester can still start an Open task after withdrawing');
+  ok((await bal(T)) === creditsBefore, '9. credits are untouched by a withdrawal');
   await sweep();
-  ok((await heldFor(s)) === 0, '1. withdrawal erases everything the AI derived (analysis, verdicts, notes)');
-  ok((await state(T, 'tech_savvy')) === 'active' && (await feed(T)).find((f) => f.campaign_id === targeted).eligible === true, '2. an ALREADY RECORDED qualified decision stays in force (it is a status, not new processing): the tester keeps what they earned');
-  const afterWithdraw = await aiProfile(T);
-  ok(afterWithdraw.subject_ref === null && afterWithdraw.profile.bio === null && afterWithdraw.categories.every((c) => c.answers === null), '3. the contract hands out no bio, no answers and no subject_ref any more');
-  ok(await failsWith(() => decide(T, 'tech_savvy', 'not_qualified'), 'consent_required'), '4. nothing new can be recorded while consent is off');
-  ok(mapAssessmentInput(afterWithdraw).targets.length === 0 && mapContractProfile(afterWithdraw).consent === false, '5. the AI sees no consent and no targets, so it neither assesses nor recommends');
-  await save(T, 'tech_savvy', ANS('edited while off'));
-  ok((await state(T, 'tech_savvy')) === 'pending_assessment', '6. if the tester edits answers while AI is off the category becomes pending and WAITS (it is never silently re-approved)');
-  ok((await feed(T)).find((f) => f.campaign_id === targeted).eligible === false, '7. and the targeted campaign is no longer available until a new decision exists');
+  ok((await heldFor(s1)) === 0, '10. the erasure sweep erases the cached analysis, the cached recommendations and the clarification notes');
+  const after = await aiProfile(T);
+  ok(after.subject_ref === null && after.profile.bio === null && after.categories.every((c) => c.answers === null), '11. the contract hands out no bio, no answers and no subject_ref any more');
+  ok(await svc(() => q('select public.ai_consent_active($1,$2) r', [T, s1])).then((r) => r[0].r) === false, '12. ai_consent_active is false the moment consent is withdrawn (so no further model request is made)');
+  ok(await failsWith(() => decide(T, 'tech_savvy', 'qualified'), 'consent_required'), '13. nothing new can be recorded while consent is off');
+  ok(mapAssessmentInput(after).targets.length === 0 && mapContractProfile(after).consent === false, '14. the AI sees no consent and no targets, so it neither assesses nor recommends');
+  ok(await failsWith(() => q(`insert into public.category_qualifications (user_id, category, status, source, question_version, answers_hash) values ($1,'business_office','qualified','ai_assessment',1,$2)`, [T, H('d')]), 'consent_required'), '15. even a direct insert by the table owner is refused by the trigger without active consent');
+  await putAn(T, s1, H('z'));
+  ok((await putMatches(T, s1, [{ campaign_id: open, profile_hash: H('a'), campaign_hash: H('1'), result: {} }])) === 0 && (await heldFor(s1)) === 0, '16. a model run that finishes after the withdrawal stores nothing');
+
+  // withdrawing twice and re-granting
+  await consent(T, false);
+  ok((await state(T, 'tech_savvy')) === 'pending_assessment', '17. withdrawing again is harmless');
   await consent(T, true);
-  ok((await subjectOf(T)) !== s && (await state(T, 'tech_savvy')) === 'pending_assessment', '8. re-consent issues a new subject_ref and the category is queued for assessment again');
-  // deleting answers removes the decision
+  const s2 = await subjectOf(T);
+  ok(s2 !== s1 && (await state(T, 'tech_savvy')) === 'pending_assessment' && mapAssessmentInput(await aiProfile(T)).targets.map((t) => t.category).sort().join() === 'founders_builders,tech_savvy', '18. re-consent issues a NEW subject_ref and both professional categories are queued for assessment again');
+  await decide(T, 'tech_savvy', 'qualified');
+  ok((await state(T, 'tech_savvy')) === 'active' && (await feed(T)).find((f) => f.campaign_id === targeted).eligible === true, '19. a fresh decision after re-consent works normally');
+
+  // editing answers while consent is off
+  await consent(T, false);
+  await save(T, 'tech_savvy', ANS('edited while off'));
+  ok((await state(T, 'tech_savvy')) === 'pending_assessment', '20. editing answers while AI is off keeps the category pending');
+  // deleting answers
+  await consent(T, true);
   await decide(T, 'tech_savvy', 'qualified');
   await delExp(T, 'tech_savvy');
-  ok((await state(T, 'tech_savvy')) !== 'active' && (await q('select count(*)::int n from public.category_qualifications where user_id=$1', [T]))[0].n === 0, '9. deleting the answers deletes the decision made about them (the way to remove a qualification)');
+  ok((await state(T, 'tech_savvy')) !== 'active' && (await q('select count(*)::int n from public.category_qualifications where user_id=$1 and category=$2', [T, 'tech_savvy']))[0].n === 0, '21. deleting the answers still deletes the decision made about them');
+
+  // other testers are unaffected by someone else's withdrawal
+  const U = await mk();
+  await profile(U, ['tech_savvy']);
+  await save(U, 'tech_savvy', ANS('tech'));
+  await consent(U, true);
+  await decide(U, 'tech_savvy', 'qualified');
+  const V = await mk();
+  await profile(V, ['tech_savvy']);
+  await save(V, 'tech_savvy', ANS('tech'));
+  await consent(V, true);
+  await consent(V, false);
+  ok((await state(U, 'tech_savvy')) === 'active', "22. one tester's withdrawal never touches another tester's decision");
+  // the privilege surface of the new objects
+  ok(await failsWith(() => as(U, () => q('select public.ai_consent_active($1,$2)', [U, s2])), 'permission denied'), '23. ai_consent_active is not callable by a signed-in user');
+  const trg = await q(`select count(*)::int n from pg_trigger where tgname in ('ai_consents_withdrawal_clears_decisions','category_qualifications_require_consent') and not tgisinternal`);
+  ok(trg[0].n === 2, '24. migration 10 adds exactly its two triggers');
 }
 
 console.log('\n[existing protections intact: credits, reservations, referrals]');
