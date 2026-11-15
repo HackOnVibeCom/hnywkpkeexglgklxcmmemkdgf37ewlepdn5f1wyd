@@ -2,7 +2,7 @@
 -- Run with the owner login after applying it. Tested against the real migration in supabase/tests/referral_settlement.mjs.
 select check_name, ok from (
   select 1 as n, 'migration 11 objects exist (referral_try_settle, referral_settle_on_reward, trigger credit_ledger_referral_settle)' as check_name,
-         (to_regprocedure('public.referral_try_settle(uuid, integer)') is not null and to_regprocedure('public.referral_settle_on_reward()') is not null
+         (to_regprocedure('public.referral_try_settle(uuid, integer, boolean)') is not null and to_regprocedure('public.referral_settle_on_reward()') is not null
           and (select count(*) = 1 from pg_trigger where tgname = 'credit_ledger_referral_settle' and not tgisinternal and tgenabled = 'O')) as ok
   union all
   select 2, 'the completion trigger fires only for test_reward rows, AFTER INSERT, per row',
@@ -10,10 +10,16 @@ select check_name, ok from (
   union all
   select 3, 'internal functions are NOT executable by anon / authenticated / public',
          (select bool_and(not has_function_privilege('anon', p, 'execute') and not has_function_privilege('authenticated', p, 'execute'))
-            from unnest(array['public.referral_try_settle(uuid, integer)'::regprocedure, 'public.referral_settle_on_reward()'::regprocedure]) p)
+            from unnest(array['public.referral_try_settle(uuid, integer, boolean)'::regprocedure, 'public.referral_settle_on_reward()'::regprocedure]) p)
   union all
-  select 4, 'settle_referral_rewards(): authenticated yes, anon no (unchanged)',
-         (has_function_privilege('authenticated', 'public.settle_referral_rewards()', 'execute') and not has_function_privilege('anon', 'public.settle_referral_rewards()', 'execute'))
+  select 4, 'settle_referral_rewards() and get_my_referrals(): authenticated yes, anon no (unchanged)',
+         (has_function_privilege('authenticated', 'public.settle_referral_rewards()', 'execute') and not has_function_privilege('anon', 'public.settle_referral_rewards()', 'execute')
+          and has_function_privilege('authenticated', 'public.get_my_referrals()', 'execute') and not has_function_privilege('anon', 'public.get_my_referrals()', 'execute'))
+  union all
+  select 41, 'referral_policy: one row, own_campaign_counts_from set, RLS on, no client privileges',
+         ((select count(*) = 1 and bool_and(own_campaign_counts_from is not null) from public.referral_policy)
+          and (select relrowsecurity from pg_class where oid = 'public.referral_policy'::regclass)
+          and not has_table_privilege('anon', 'public.referral_policy', 'select') and not has_table_privilege('authenticated', 'public.referral_policy', 'select'))
   union all
   select 5, 'all three functions are SECURITY DEFINER with an empty search_path',
          (select bool_and(p.prosecdef and exists (select 1 from unnest(coalesce(p.proconfig, '{}'::text[])) c where c like 'search_path=%'))

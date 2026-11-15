@@ -1,8 +1,9 @@
--- UXBarter - ROLLBACK of migration 11 (referral settlement on completion) to the behaviour of migrations 1-10.
--- WHEN: only if the completion-time settlement misbehaves. Effects: the completion trigger and the shared settlement function are removed and
--- settle_referral_rewards() is restored byte for byte (lazy settlement by the referrer's own page loads, as before the hotfix).
--- KEEPS: every row and every credit (nothing is deleted or changed), and the two informational columns referrals.settle_reason / evaluated_at
--- (harmless; dropping them is not needed). Already-paid referral rewards stay paid. One transaction. Tested in supabase/tests/referral_settlement.mjs.
+-- UXBarter - ROLLBACK of migration 11 (referral settlement on completion + own-campaign policy) to the behaviour of migrations 1-10.
+-- WHEN: only if the completion-time settlement misbehaves. Effects: the completion trigger, the shared settlement function and the policy
+-- table are removed, and settle_referral_rewards() and get_my_referrals() are restored byte for byte (lazy settlement by page loads and the
+-- old "own campaign never counts" rule, as before the hotfix). Referral rewards already paid stay paid (ledger rows are never touched).
+-- KEEPS: every row and every credit, and the informational columns referrals.settle_reason / evaluated_at (harmless).
+-- One transaction. Tested in supabase/tests/referral_settlement.mjs.
 begin;
 
 drop trigger if exists credit_ledger_referral_settle on public.credit_ledger;
@@ -70,6 +71,27 @@ begin
 end;
 $$;
 
-drop function if exists public.referral_try_settle(uuid, integer);
+create or replace function public.get_my_referrals()
+returns jsonb
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select jsonb_build_object(
+    'code',      (select p.ref_code from public.profiles p where p.id = auth.uid()),
+    'cap',       3,
+    'invited',   (select count(*) from public.referrals r where r.referrer_id = auth.uid()),
+    'converted', (select count(*) from public.referrals r
+                   where r.referrer_id = auth.uid()
+                     and exists (select 1 from public.credit_ledger l
+                                  where l.user_id = r.referee_id and l.reason = 'test_reward' and l.created_at >= r.created_at
+                                    and not exists (select 1 from public.campaigns c where c.id = l.campaign_id and c.owner_id = r.referrer_id))),
+    'rewarded',  (select count(*) from public.credit_ledger g where g.user_id = auth.uid() and g.reason = 'referral_reward')
+  )
+$$;
+
+drop function if exists public.referral_try_settle(uuid, integer, boolean);
+drop table if exists public.referral_policy;
 
 commit;

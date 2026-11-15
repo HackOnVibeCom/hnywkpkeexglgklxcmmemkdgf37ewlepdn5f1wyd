@@ -111,7 +111,7 @@ console.log('\n[a test done BEFORE the claim never counts]');
   await q('delete from public.referrals where referee_id = $1', [early]);
 }
 
-console.log('\n[a test on the REFERRER\'S OWN campaign never counts]');
+console.log('\n[a test on the referrer own campaign DOES count (owner decision, migration 11): a founder inviting a friend to test their product]');
 {
   const ref = await mk(); const friend = await mk();
   ok((await claim(friend, await codeOf(ref))).claimed === true, 'friend claims');
@@ -121,10 +121,10 @@ console.log('\n[a test on the REFERRER\'S OWN campaign never counts]');
   await as(friend, () => q('select public.submit_test($1,true,$2,$3,4,false)', [ownCamp, FB.friction, FB.suggestion]));
   ok((await ledgerRows(friend, 'test_reward')).length === 1, 'the friend really earned a test reward on the referrer’s campaign');
   const m1 = await mine(ref);
-  ok(m1.invited === 1 && m1.converted === 0, 'converted does NOT flip when the friend tests the referrer’s own campaign (no timing link to the feedback they receive)', JSON.stringify(m1));
-  ok((await settleRef(stranger)) === 0 && (await ledgerRows(ref, 'referral_reward')).length === 0, 'and nothing is paid for it');
+  ok(m1.invited === 1 && m1.converted === 1 && m1.rewarded === 1, 'the friend testing the referrer’s own campaign counts: converted 1, rewarded 1 (paid by the completion itself)', JSON.stringify(m1));
+  ok((await settleRef(stranger)) === 0 && (await ledgerRows(ref, 'referral_reward')).length === 1, 'exactly one credit was paid for it and the safety net adds nothing');
   await completeTest(friend);   // a test on someone else's campaign
-  ok((await mine(ref)).converted === 1 && (await ledgerRows(ref, 'referral_reward')).length === 1 && (await settleRef(stranger)) === 0, 'the friend’s test on a third party’s campaign does qualify, pays once (at completion) and the safety net adds nothing');
+  ok((await mine(ref)).converted === 1 && (await ledgerRows(ref, 'referral_reward')).length === 1 && (await settleRef(stranger)) === 0, 'a later test on a third party’s campaign pays nothing more: one reward per referred identity');
 }
 
 console.log('\n[cap: 3 rewarded referrals per referrer]');
