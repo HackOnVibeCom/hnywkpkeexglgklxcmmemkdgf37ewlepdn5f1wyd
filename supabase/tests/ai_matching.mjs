@@ -188,6 +188,49 @@ console.log('\n[erasure events: every withdrawal path erases what the AI holds]'
   ok((await state(j, 'tech_savvy')) === 'active', 'delete_my_ai_data does not touch qualification decisions');
 }
 
+console.log('\n[review hardening: no writes after withdrawal, reconciliation, events behind the cursor]');
+{
+  const FAKE = '00000000-0000-4000-8000-0000000000aa';
+  // 1. derived data is never stored for a consent that is gone / re-issued while the model was still thinking
+  const a = await withDerived();
+  await consent(a.u, false);
+  await sweep();
+  await putAn(a.u, a.s, H('n'));
+  await putMatches(a.u, a.s, [{ campaign_id: a.camp, profile_hash: H('n'), campaign_hash: H('1'), result: { verdict: 'good' } }]);
+  await putNote(a.u, a.s, 'tech_savvy', H('n'));
+  ok((await heldFor(a.s)) === 0, 'a run that finishes AFTER consent was withdrawn stores nothing (analysis, verdicts and notes are all no-ops)');
+  await consent(a.u, true);
+  await putAn(a.u, a.s, H('o'));
+  ok((await heldFor(a.s)) === 0, 'and a write under the OLD subject_ref after re-consent (new subject_ref) is a no-op too');
+  const s2 = await subjectOf(a.u);
+  await putAn(a.u, s2, H('p'));
+  ok((await heldFor(s2)) === 1, 'while a write under the CURRENT subject_ref works');
+  // 2. reconciliation removes rows without an active consent, independent of any event
+  const orphanUser = await mk();
+  await q(`insert into public.ai_profile_analyses (user_id, subject_ref, input_hash, analysis, model) values ($1, $2, $3, '{}', 'm')`, [orphanUser, FAKE, H('z')]);
+  ok((await heldFor(FAKE)) === 1, 'precondition: an orphan row exists (no consent row for it)');
+  await q('update public.ai_erasure_cursor set last_reconciled_at = null');
+  await sweep();
+  ok((await heldFor(FAKE)) === 0, 'the reconciliation in the sweep deletes it');
+  ok((await heldFor(s2)) === 1, 'and keeps rows that DO have an active consent for their subject_ref');
+  // 3. an event that committed BEHIND the cursor (identity ids are not commit-ordered) is still erased
+  const b = await withDerived();
+  await consent(b.u, false);
+  const maxEv = (await q('select max(id) m from public.ai_erasure_events'))[0].m;
+  await q('update public.ai_erasure_cursor set last_id = $1, last_reconciled_at = null', [Number(maxEv) + 5]);
+  ok((await heldFor(b.s)) === 2, 'precondition: the withdrawn tester still has derived data and the cursor is already PAST their event');
+  await sweep();
+  ok((await heldFor(b.s)) === 0, 'the reconciliation erases it anyway: a lost/late event cannot leave data behind');
+  // restore the cursor to the real last event so later sections see normal event processing
+  await q('update public.ai_erasure_cursor set last_id = coalesce((select max(id) from public.ai_erasure_events), 0), last_reconciled_at = null');
+  // 4. no hot-row write when nothing happened
+  await sweep();
+  const t1 = (await q('select last_reconciled_at t, last_id i from public.ai_erasure_cursor'))[0];
+  await sweep();
+  const t2 = (await q('select last_reconciled_at t, last_id i from public.ai_erasure_cursor'))[0];
+  ok(String(t1.t) === String(t2.t) && t1.i === t2.i, 'a sweep with nothing to do within the reconciliation interval does not write the cursor row');
+}
+
 console.log('\n[assessment notes]');
 {
   const { u, s } = await withDerived(['tech_savvy']);

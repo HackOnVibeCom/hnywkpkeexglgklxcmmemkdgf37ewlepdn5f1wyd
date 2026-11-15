@@ -231,7 +231,7 @@ export interface RecordQualificationArgs {
 export interface AssessNote {
   category: string;
   answers_hash: string;
-  payload: { clarification_questions: string[] };
+  payload: { clarification_questions: string[]; key?: string };
 }
 
 export interface AssessDeps extends CommonDeps {

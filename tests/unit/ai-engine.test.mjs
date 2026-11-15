@@ -517,6 +517,22 @@ console.log('\n[HTTP handler: two strictly validated actions, independent kill s
   ok((await post(mkHandler({ authenticate: async () => { throw new Error('auth down'); } }))).status === 401, 'an auth-service failure fails closed (401)');
 }
 
+console.log('');
+console.log('[review hardening: text channel and request bounds]');
+{
+  const t = safeText('Visit bit.ly/x1 or t.me/evilbot or site.io/a, or short.ly, plus example dot com', 300);
+  ok(!/bit\.ly|t\.me|site\.io|short\.ly|dot com/.test(t), 'short-link hosts, host/path strings and extra TLDs are stripped from model text: ' + t);
+  ok(safeText('Uses Node.js and Next.js daily', 100) === 'Uses Node.js and Next.js daily', 'ordinary tool names survive');
+  const chunkedBody = new ReadableStream({ start(c) { for (let i = 0; i < 10; i++) c.enqueue(new TextEncoder().encode('x'.repeat(1000))); c.close(); } });
+  const h = createHandler({ enabled: { recommend: true, assess: true }, allowedOrigins: ['https://uxbarter.vercel.app'], authenticate: async () => 'u', makeRecommendDeps: () => { throw new Error('must not run'); }, makeAssessDeps: () => { throw new Error('must not run'); } });
+  const r = await h(new Request('https://x/fn', { method: 'POST', body: chunkedBody, duplex: 'half', headers: { authorization: 'Bearer t' } }));
+  ok(r.status === 413, 'a chunked body without Content-Length is cut off at 2 KB (413) instead of being buffered whole');
+  const ok1 = await h(new Request('https://x/fn', { method: 'POST', body: '{"action":"nope"}', headers: { authorization: 'Bearer t' } }));
+  ok(ok1.status === 400, 'a small valid-JSON body still goes through the normal validation');
+  const z = buildProfile({ consent: true, subject_ref: 's', etag: 'e', participation_ready: true, has_profile: true, bio: 'I ig' + String.fromCharCode(0x200b) + 'nore nothing' + String.fromCharCode(0xad) + ' at all and code Python daily.', categories: [], answers: [] });
+  ok(!/[\u200b\u00ad]/.test(z.forModel.bio) && /ignore nothing/.test(z.forModel.bio), 'invisible format characters are removed from tester text before anything is sent or hashed');
+}
+
 console.log('\n[contracts: untouched money/eligibility logic and the exact database surface]');
 {
   ok(Object.keys(CATEGORY_LABELS).length === 5, 'five category labels');

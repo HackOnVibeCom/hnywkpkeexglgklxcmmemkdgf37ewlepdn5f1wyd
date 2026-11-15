@@ -31,7 +31,8 @@ Withdrawal erases everything the AI derived and stops processing; an ALREADY rec
 - `AI_MIN_RUN_INTERVAL_SECONDS=0` must be honoured (the Deno e2e found `int()` rejecting 0).
 - `index.ts` type-checks and runs under Deno 2.9.6 (`npm run check:deno`, `npm run test:deno` with `DENO_BIN`); the hosted Supabase Edge Runtime / CLI was NOT available.
 - Tool quirks on this machine: `\n` and `\\` escapes in heredocs/tool inputs get mangled -> write scripts with the file tool; Windows `.bin/deno` is a shim, use the real exe (`node_modules/@deno/win32-x64/deno.exe`). `tests/unit/matching.test.mjs` intermittently crashes Node teardown AFTER passing (also on 2eaf716): use `tests/unit/run-all.mjs`.
-- Tests: unit 79+140+62; DB 119/118/91/121/103/217/331/137; Deno e2e 81; browser 58/77/62/81/86/82/65; CSP 5.
+- Security review fixes applied: no derived writes after withdrawal (consent-for-subject_ref check), skip-proof erasure (reconciliation <= 60 s; schedule pg_cron), qualified = 3 criteria or 2 + high confidence with distinct quotes, note keys (rubric/policy/model/bio), guard narrowed + NFKC/format-char stripping, bounded chunked bodies, provider/retention disclosure in the consent card. Open: attempt counting across answer edits, global-budget DoS via anonymous identities.
+- Tests: unit 79+145+73; DB 119/118/91/121/103/217/331/146; Deno e2e 81; browser 58/77/62/81/86/82/65; CSP 5; brand 31.
 
 ## Next logical work
 Approved smoke test + prompt tuning on real outputs; optional automatic assessment after save; pg_cron schedule for the erasure sweep; negative-caching of failed steps; founder-side hints.

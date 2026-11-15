@@ -28,11 +28,18 @@ function isBadChar(code: number): boolean {
   return (code < 32 && code !== 9 && code !== 10) || code === 127 || code === 0x2028 || code === 0x2029;
 }
 
-/** Strip control characters (keep tab/newline), collapse runs of blank space, trim, cap length. */
+/**
+ * Unicode-normalise (NFKC: look-alike / full-width forms become plain letters), drop invisible FORMAT characters (zero-width
+ * space/joiner, soft hyphen, bidi marks: a classic way to smuggle "ig<ZWSP>nore" past a filter while the model still reads it),
+ * strip control characters (keep tab/newline), collapse runs of blank space, trim, cap length.
+ */
 export function cleanText(input: unknown, maxChars: number): string {
   if (typeof input !== 'string') return '';
   let out = '';
-  for (const ch of input) out += isBadChar(ch.codePointAt(0) ?? 0) ? ' ' : ch;
+  for (const ch of input.normalize('NFKC')) {
+    if (/\p{Cf}/u.test(ch)) continue;
+    out += isBadChar(ch.codePointAt(0) ?? 0) ? ' ' : ch;
+  }
   const s = out
     .split('\n')
     .map((line) => line.replace(/[ \t]+/g, ' ').trim())

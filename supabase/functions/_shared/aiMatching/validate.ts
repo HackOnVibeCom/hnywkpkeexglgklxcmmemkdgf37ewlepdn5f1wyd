@@ -43,7 +43,8 @@ export function safeText(input: unknown, maxChars: number): string {
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1') // markdown links keep their label only
     .replace(/(?:https?:\/\/|www\.)\S+/gi, '')
     .replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, '') // e-mail addresses
-    .replace(/\b[\w-]+\s*(?:\.|\(?dot\)?)\s*(?:com|net|org|ru|xyz|info|me)\b/gi, '') // "example dot com", "evil.ru"
+    .replace(/\b[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}\/\S*/gi, '') // any host/path ("bit.ly/x", "t.me/handle", "site.io/a")
+    .replace(/\b[\w-]+\s*(?:\.|\(?dot\)?)\s*(?:com|net|org|ru|xyz|info|me|ly|gl|cc|tk|link|click|top|site|online|shop|store|app|dev|ua|su|biz|club)\b/gi, '') // "example dot com", "evil.ru", "short.ly"
     .replace(/\+?\d[\d\s().-]{7,}\d/g, '') // phone-like digit runs
     .replace(/[`*_#>|]+/g, '')
     .replace(/\s+/g, ' ')

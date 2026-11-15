@@ -22,6 +22,25 @@ export interface HandlerOptions {
 
 const MAX_BODY_BYTES = 2048;
 
+/** Reads the request body as text, stopping as soon as it exceeds `max` bytes (null). Does not rely on Content-Length. */
+async function readBounded(req: Request, max: number): Promise<string | null> {
+  if (!req.body) return '';
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) { await reader.cancel().catch(() => undefined); return null; }
+    chunks.push(value);
+  }
+  const all = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) { all.set(c, off); off += c.byteLength; }
+  return new TextDecoder().decode(all);
+}
+
 function cors(req: Request, allowed: readonly string[]): Record<string, string> {
   const origin = req.headers.get('origin');
   const h: Record<string, string> = {
@@ -62,9 +81,9 @@ export function createHandler(opts: HandlerOptions): (req: Request) => Promise<R
     // Bounded, strictly validated input. The only accepted bodies are {"action":"recommend"} and {"action":"assess"}.
     const declared = Number(req.headers.get('content-length') ?? '0');
     if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return json(req, opts, 413, { error: 'payload_too_large' });
-    let text: string;
-    try { text = await req.text(); } catch { return json(req, opts, 400, { error: 'bad_request' }); }
-    if (text.length > MAX_BODY_BYTES) return json(req, opts, 413, { error: 'payload_too_large' });
+    let text: string | null;
+    try { text = await readBounded(req, MAX_BODY_BYTES); } catch { return json(req, opts, 400, { error: 'bad_request' }); }
+    if (text === null) return json(req, opts, 413, { error: 'payload_too_large' }); // chunked bodies are cut off at the limit, never buffered whole
     let body: unknown;
     try { body = JSON.parse(text); } catch { return json(req, opts, 400, { error: 'bad_request' }); }
     const keys = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body as object) : [];

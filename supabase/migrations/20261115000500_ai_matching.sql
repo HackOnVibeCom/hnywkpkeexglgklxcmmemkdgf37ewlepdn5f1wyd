@@ -91,8 +91,9 @@ create table public.ai_usage_global (
 -- 5. Cursor into the contract's erasure-event log (single row).
 -- ---------------------------------------------------------------------------
 create table public.ai_erasure_cursor (
-  id      smallint primary key check (id = 1),
-  last_id bigint   not null default 0
+  id                 smallint primary key check (id = 1),
+  last_id            bigint      not null default 0,
+  last_reconciled_at timestamptz
 );
 insert into public.ai_erasure_cursor (id, last_id) values (1, 0);
 
@@ -170,6 +171,11 @@ begin
   if p_user is null or p_subject_ref is null or p_input_hash is null or p_analysis is null or p_model is null then
     raise exception 'invalid_arguments';
   end if;
+  -- Never store derived data for a consent that was withdrawn (or re-issued under a new subject_ref) while the model was thinking.
+  perform 1 from public.ai_consents c where c.user_id = p_user and c.ai_processing and c.subject_ref = p_subject_ref for share;
+  if not found then
+    return;
+  end if;
   insert into public.ai_profile_analyses (user_id, subject_ref, input_hash, analysis, model)
   values (p_user, p_subject_ref, p_input_hash, p_analysis, left(p_model, 80))
   on conflict (user_id) do update
@@ -195,6 +201,10 @@ begin
   end if;
   if jsonb_array_length(p_matches) > 100 then
     raise exception 'too_many_matches';
+  end if;
+  perform 1 from public.ai_consents c where c.user_id = p_user and c.ai_processing and c.subject_ref = p_subject_ref for share;
+  if not found then
+    return 0; -- consent withdrawn / re-issued while the model was thinking: store nothing
   end if;
   for v_m in select * from jsonb_array_elements(p_matches) loop
     if not exists (select 1 from public.campaigns c where c.id = (v_m ->> 'campaign_id')::uuid) then
@@ -238,6 +248,10 @@ begin
   if p_user is null or p_subject_ref is null or p_category is null or p_answers_hash is null or p_payload is null then
     raise exception 'invalid_arguments';
   end if;
+  perform 1 from public.ai_consents c where c.user_id = p_user and c.ai_processing and c.subject_ref = p_subject_ref for share;
+  if not found then
+    return;
+  end if;
   insert into public.ai_assessment_notes (user_id, category, subject_ref, answers_hash, outcome, payload, model)
   values (p_user, p_category, p_subject_ref, p_answers_hash, 'needs_clarification', p_payload, left(p_model, 80))
   on conflict (user_id, category) do update
@@ -266,8 +280,14 @@ $$;
 -- THE erasure mechanism of the contract (docs/AI_INTEGRATION_CONTRACT.md section 10): read the profile workstream's
 -- erasure events after my own cursor, delete EVERYTHING held for each subject_ref (all reasons, any category: derived data is
 -- cheap to recompute and must never outlive a withdrawal), and only then advance the cursor - all in one transaction.
--- Called by the Edge Function at the start of every request (a global sweep: any request erases for every tester) and,
--- optionally, by pg_cron. A concurrent sweep skips (returns 0) instead of waiting.
+--
+-- RECONCILIATION. Identity ids are not commit-ordered: an event inserted by a slow transaction can become visible AFTER a later
+-- event was already processed and the cursor moved past it, so "id > cursor" would never return it. Therefore, at most once per
+-- minute (and whenever events were processed), everything held for a subject_ref that has NO active consent row any more is
+-- deleted too. That is idempotent, independent of event ordering, and also covers rows written after an erasure.
+--
+-- Called by the Edge Function at the start of every request (a global sweep: any request erases for every tester) and, strongly
+-- recommended, by pg_cron so erasure also happens with no traffic. A concurrent sweep skips (returns 0) instead of waiting.
 create or replace function public.ai_apply_erasure_events(p_limit integer default 500)
 returns integer
 language plpgsql
@@ -275,11 +295,13 @@ security definer
 set search_path = ''
 as $$
 declare
-  v_last bigint;
-  v_ev   record;
-  v_n    integer := 0;
+  v_last  bigint;
+  v_at    timestamptz;
+  v_ev    record;
+  v_n     integer := 0;
+  v_recon boolean := false;
 begin
-  select c.last_id into v_last from public.ai_erasure_cursor c where c.id = 1 for update skip locked;
+  select c.last_id, c.last_reconciled_at into v_last, v_at from public.ai_erasure_cursor c where c.id = 1 for update skip locked;
   if not found then
     return 0; -- another sweep is running
   end if;
@@ -290,7 +312,20 @@ begin
     v_last := v_ev.id;
     v_n := v_n + 1;
   end loop;
-  update public.ai_erasure_cursor set last_id = v_last where id = 1;
+
+  if v_n > 0 or v_at is null or v_at < clock_timestamp() - interval '60 seconds' then
+    delete from public.ai_profile_analyses a
+     where not exists (select 1 from public.ai_consents c where c.user_id = a.user_id and c.ai_processing and c.subject_ref = a.subject_ref);
+    delete from public.ai_match_cache m
+     where not exists (select 1 from public.ai_consents c where c.user_id = m.user_id and c.ai_processing and c.subject_ref = m.subject_ref);
+    delete from public.ai_assessment_notes n
+     where not exists (select 1 from public.ai_consents c where c.user_id = n.user_id and c.ai_processing and c.subject_ref = n.subject_ref);
+    v_recon := true;
+  end if;
+
+  if v_n > 0 or v_recon then -- no write (and no hot-row churn) when nothing happened
+    update public.ai_erasure_cursor set last_id = v_last, last_reconciled_at = case when v_recon then clock_timestamp() else last_reconciled_at end where id = 1;
+  end if;
   return v_n;
 end;
 $$;

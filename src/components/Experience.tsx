@@ -184,9 +184,14 @@ export function ConsentCard({ granted, onChanged }: { granted: boolean; onChange
         Without it you can still take every test you are eligible for; professional categories simply stay pending.
       </p>
       <p className="mt-2 text-xs text-slate-500" data-testid="ai-consent-policy">
-        Turning it off stops all AI processing and erases the analysis and recommendations the AI derived about you. A qualification result you already received
+        Turning it off stops all AI processing and erases the analysis and recommendations the AI derived about you from UXBarter’s database. A qualification result you already received
         (it records only “qualified” or “not qualified”, never your answers) stays in place so you keep access to what you earned; to remove it, delete your answers
         below. If you change an answer while AI processing is off, that professional category waits as pending until you turn it on again.
+      </p>
+      <p className="mt-2 text-xs text-slate-500" data-testid="ai-consent-provider">
+        <strong>Who receives it:</strong> the text is sent to OpenAI, our AI provider, over a secure connection. OpenAI’s API policy says API data is not used to train its
+        models by default and may be kept for up to 30 days for abuse monitoring, so deleting data here removes UXBarter’s copies, not necessarily OpenAI’s. Please do not
+        put contact details or sensitive personal information (health, finances, ID numbers) in your bio or answers.
       </p>
       <label className="mt-4 flex cursor-pointer items-start gap-3 text-sm font-medium text-slate-900">
         <input

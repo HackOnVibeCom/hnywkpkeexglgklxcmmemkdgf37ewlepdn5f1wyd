@@ -18,7 +18,7 @@ import { AiError } from './openai.ts';
 import { looksLikeInstruction } from './guard.ts';
 import { ASSESS_SCHEMA, assessSystemPrompt, assessUserMessage } from './prompts.ts';
 import { DEFAULT_CLARIFICATION, RUBRICS, RUBRIC_VERSION } from './rubrics.ts';
-import { cleanText, isRecord, LIMITS, normForQuote } from './util.ts';
+import { canonicalJson, cleanText, isRecord, LIMITS, normForQuote, POLICY_VERSION, sha256Hex } from './util.ts';
 import { groundedQuote, safeText } from './validate.ts';
 import type {
   AssessDeps, AssessmentTarget, AssessOutcome, AssessResponse, AssessResult, AssessStatus, ModelUsage, ProfessionalCategory,
@@ -39,7 +39,7 @@ function message(outcome: AssessOutcome, label: string, why?: 'thin' | 'instruct
       return `From your answers we could not yet see hands-on experience for ${label}. That is fine: you can still take open tasks and use any other category. If you do have more experience, you can add detail to your answers, but only what is true. ${SELF_REPORTED}`;
     case 'needs_clarification':
       if (why === 'thin') return `Your answers for ${label} are very short, so we cannot judge them yet. A few more concrete details about what you actually did would help, but only if they are true. You can still take open tasks. ${SELF_REPORTED}`;
-      if (why === 'instruction') return `Some text in your answers reads like instructions rather than a description of your experience. Please describe what you actually did in your own words. ${SELF_REPORTED}`;
+      if (why === 'instruction') return `Part of your answers looks like it is addressed to a computer system rather than describing what you did. Please rewrite it in your own words about your real experience. ${SELF_REPORTED}`;
       return `We could not tell confidently from your answers for ${label}. Concrete details about what you actually did can help, but only if they are true; nothing is wrong if your experience is modest, and you can still take open tasks. ${SELF_REPORTED}`;
     default:
       return `We could not finish checking ${label} right now. It stays pending; please try again later.`;
@@ -72,12 +72,16 @@ export function decideAssessment(raw: unknown, target: AssessmentTarget): Decisi
   const validIds = new Set(RUBRICS[target.category].criteria.map((c) => c.id));
   const seen = new Set<string>();
   const answerIdx = new Set<number>();
+  const quotesUsed = new Set<string>();
   for (const c of raw.criteria.slice(0, 8)) {
     if (!isRecord(c) || c.met !== 'yes' || typeof c.id !== 'string' || !validIds.has(c.id) || seen.has(c.id)) continue;
     if (looksLikeInstruction(c.quote)) continue;
     let idx = -1;
     for (let i = 0; i < answersNorm.length && idx < 0; i++) if (groundedQuote(c.quote, answersNorm[i])) idx = i; // the quote must live inside ONE answer
     if (idx < 0) continue;
+    const qn = normForQuote(String(c.quote));
+    if (quotesUsed.has(qn)) continue; // two criteria cannot lean on the very same words
+    quotesUsed.add(qn);
     seen.add(c.id);
     answerIdx.add(idx);
   }
@@ -90,7 +94,9 @@ export function decideAssessment(raw: unknown, target: AssessmentTarget): Decisi
   const sure = raw.confidence !== 'low';
   const num = raw.confidence === 'high' ? 0.85 : 0.6;
 
-  if (raw.outcome === 'qualified' && !flagged && sure && grounded >= 2 && answerIdx.size >= 2) return { decision: 'qualified', confidence: num, questions: [] };
+  // Qualified needs MORE than two grounded criteria unless the model is highly confident: a cheap two-word "evidence" pair is not enough.
+  const enough = grounded >= 3 || (grounded >= 2 && raw.confidence === 'high');
+  if (raw.outcome === 'qualified' && !flagged && sure && enough && answerIdx.size >= 2) return { decision: 'qualified', confidence: num, questions: [] };
   if (raw.outcome === 'not_yet' && !flagged && sure && grounded < 2) return { decision: 'not_qualified', confidence: num, questions: [] };
   // Everything else - including a "qualified" claim the evidence does not back - is NOT recorded.
   return { decision: 'needs_clarification', confidence: 0, questions: qs };
@@ -113,6 +119,9 @@ export async function assess(deps: AssessDeps): Promise<AssessResponse> {
   const bioRaw = cleanText(input.bio, LIMITS.bioChars);
   const bio = looksLikeInstruction(bioRaw) ? '' : bioRaw; // instruction-like bio is simply not sent
   const notes = await deps.getNotes(subject).catch((): [] => []);
+  // A stored clarification is only reused for the same answers AND the same rubric/policy/model/bio (otherwise a rubric or model
+  // change, or a changed bio, would be blocked behind a stale note).
+  const noteKey = await sha256Hex(canonicalJson({ rubric: RUBRIC_VERSION, policy: POLICY_VERSION, model: deps.config.model, bio }));
   const results: AssessResult[] = [];
   const toCall: AssessmentTarget[] = [];
 
@@ -120,7 +129,7 @@ export async function assess(deps: AssessDeps): Promise<AssessResponse> {
     const text = t.answers.map((a) => a.answer).join(' ');
     if (wordCount(text) < MIN_TOTAL_WORDS) { results.push(result(t, 'needs_clarification', 'thin')); continue; }
     if (looksLikeInstruction(text)) { results.push(result(t, 'needs_clarification', 'instruction')); continue; }
-    const note = notes.find((n) => n.category === t.category && n.answers_hash === t.answers_hash);
+    const note = notes.find((n) => n.category === t.category && n.answers_hash === t.answers_hash && n.payload.key === noteKey);
     if (note) { results.push(result(t, 'needs_clarification', undefined, note.payload.clarification_questions)); continue; }
     toCall.push(t);
   }
@@ -135,48 +144,51 @@ export async function assess(deps: AssessDeps): Promise<AssessResponse> {
   const spent: ModelUsage = { input_tokens: 0, output_tokens: 0 };
   let failures = 0;
   let consentGone = false;
-  try {
-    for (const t of toCall) {
-      try {
-        const res = await deps.callModel({
-          name: 'professional_assessment', system: assessSystemPrompt(t.category),
-          user: assessUserMessage(bio, t.answers.map((a) => ({ question_id: a.question_id, question: cleanText(a.question, 300), answer: cleanText(a.answer, LIMITS.answerChars) }))),
-          schema: ASSESS_SCHEMA as unknown as Record<string, unknown>, maxOutputTokens: LIMITS.maxOutputTokensAssess,
-        });
-        spent.input_tokens += res.usage.input_tokens; spent.output_tokens += res.usage.output_tokens;
-        const d = decideAssessment(res.json, t);
-        if (!d) { failures++; deps.log?.('assessment_malformed'); results.push(result(t, 'pending')); continue; }
 
-        if (d.decision === 'needs_clarification') {
-          await deps.putNote(subject, t.category, t.answers_hash, { clarification_questions: d.questions }).catch(() => deps.log?.('note_write_failed'));
-          results.push(result(t, 'needs_clarification', undefined, d.questions));
-          continue;
-        }
-        try {
-          await deps.recordQualification({
-            category: t.category, question_version: t.question_version, answers_hash: t.answers_hash, status: d.decision,
-            // Fixed text only: no model-written prose and never any answer text is stored in the decision.
-            assessment: {
-              model: deps.config.model, rubric_version: RUBRIC_VERSION, confidence: d.confidence,
-              summary: d.decision === 'qualified'
-                ? `Self-reported answers judged to show hands-on experience (rubric ${RUBRIC_VERSION}).`
-                : `Self-reported answers did not yet show hands-on experience (rubric ${RUBRIC_VERSION}).`,
-            },
-          });
-          results.push(result(t, d.decision));
-        } catch (e) {
-          const m = String((e as Error)?.message ?? '');
-          if (m.includes('consent_required')) { consentGone = true; deps.log?.('record_consent_required'); }
-          else if (m.includes('stale_assessment')) deps.log?.('record_stale'); // answers changed while we were thinking: not an error
-          else { failures++; deps.log?.('record_failed'); }
-          results.push(result(t, 'pending'));
-        }
-      } catch (e) {
-        failures++;
-        deps.log?.(e instanceof AiError ? `model_${e.code}` : 'assess_failed');
-        results.push(result(t, 'pending'));
+  // One category: returns its result and never throws (a failure is a "pending" result, never a decision).
+  const one = async (t: AssessmentTarget): Promise<AssessResult> => {
+    try {
+      const res = await deps.callModel({
+        name: 'professional_assessment', system: assessSystemPrompt(t.category),
+        user: assessUserMessage(bio, t.answers.map((a) => ({ question_id: a.question_id, question: cleanText(a.question, 300), answer: cleanText(a.answer, LIMITS.answerChars) }))),
+        schema: ASSESS_SCHEMA as unknown as Record<string, unknown>, maxOutputTokens: LIMITS.maxOutputTokensAssess,
+      });
+      spent.input_tokens += res.usage.input_tokens; spent.output_tokens += res.usage.output_tokens;
+      const d = decideAssessment(res.json, t);
+      if (!d) { failures++; deps.log?.('assessment_malformed'); return result(t, 'pending'); }
+
+      if (d.decision === 'needs_clarification') {
+        await deps.putNote(subject, t.category, t.answers_hash, { clarification_questions: d.questions, key: noteKey }).catch(() => deps.log?.('note_write_failed'));
+        return result(t, 'needs_clarification', undefined, d.questions);
       }
+      try {
+        await deps.recordQualification({
+          category: t.category, question_version: t.question_version, answers_hash: t.answers_hash, status: d.decision,
+          // Fixed text only: no model-written prose and never any answer text is stored in the decision.
+          assessment: {
+            model: deps.config.model, rubric_version: RUBRIC_VERSION, confidence: d.confidence,
+            summary: d.decision === 'qualified'
+              ? `Self-reported answers judged to show hands-on experience (rubric ${RUBRIC_VERSION}).`
+              : `Self-reported answers did not yet show hands-on experience (rubric ${RUBRIC_VERSION}).`,
+          },
+        });
+        return result(t, d.decision);
+      } catch (e) {
+        const m = String((e as Error)?.message ?? '');
+        if (m.includes('consent_required')) { consentGone = true; deps.log?.('record_consent_required'); }
+        else if (m.includes('stale_assessment')) deps.log?.('record_stale'); // answers changed while we were thinking: not an error
+        else { failures++; deps.log?.('record_failed'); }
+        return result(t, 'pending');
+      }
+    } catch (e) {
+      failures++;
+      deps.log?.(e instanceof AiError ? `model_${e.code}` : 'assess_failed');
+      return result(t, 'pending');
     }
+  };
+
+  try {
+    results.push(...(await Promise.all(toCall.map(one))));
   } finally {
     if (spent.input_tokens + spent.output_tokens > 0) await deps.recordTokens(spent).catch(() => undefined);
   }
