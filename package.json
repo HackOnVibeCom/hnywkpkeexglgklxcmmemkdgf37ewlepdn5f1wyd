@@ -13,8 +13,10 @@
     "typecheck": "tsc -b",
     "preview": "vite preview",
     "test:db": "npm --prefix supabase/tests install && npm --prefix supabase/tests test",
+    "test:deno": "node tests/deno/e2e.mjs",
+    "check:deno": "deno check supabase/functions/ai-match/index.ts",
     "test:browser": "npm --prefix tests/browser install && npm --prefix tests/browser test",
-    "test:unit": "node tests/unit/matching.test.mjs && node tests/unit/ai-engine.test.mjs"
+    "test:unit": "node tests/unit/run-all.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "~2.105.0",

@@ -14,6 +14,11 @@ import type { AiRecommendation, RecommendationsResponse } from './aiContract';
  */
 export type RecommendationProvider = () => Promise<RecommendationsResponse>;
 
+/**
+ * Default provider: `unavailable`, no network. The real provider is `fetchAiRecommendations` in src/lib/ai/aiApi.ts (Edge Function
+ * `ai-match`, action "recommend"), which Discover calls; it needs browser-only modules, so this file stays dependency-free and
+ * importable by the Node unit tests.
+ */
 export const fetchRecommendations: RecommendationProvider = async () => ({ status: 'unavailable' });
 
 /**
@@ -29,7 +34,14 @@ export function actionableRecommendations(resp: RecommendationsResponse, eligibl
   for (const r of resp.items) {
     if (!r || typeof r.campaign_id !== 'string' || !eligibleIds.has(r.campaign_id) || seen.has(r.campaign_id)) continue;
     seen.add(r.campaign_id);
-    out.push({ campaign_id: r.campaign_id, reason: typeof r.reason === 'string' ? r.reason.slice(0, 280) : '', ...(typeof r.score === 'number' ? { score: r.score } : {}) });
+    out.push({
+      campaign_id: r.campaign_id,
+      reason: typeof r.reason === 'string' ? r.reason.slice(0, 280) : '',
+      ...(typeof r.score === 'number' ? { score: r.score } : {}),
+      ...(r.verdict === 'strong' || r.verdict === 'good' ? { verdict: r.verdict } : {}),
+      ...(Array.isArray(r.evidence) ? { evidence: r.evidence.filter((e) => e && typeof e.quote === 'string' && typeof e.relevance === 'string').slice(0, 3) } : {}),
+      ...(Array.isArray(r.unsupported_requirements) ? { unsupported_requirements: r.unsupported_requirements.filter((u) => typeof u === 'string').slice(0, 5) } : {}),
+    });
   }
   return out;
 }

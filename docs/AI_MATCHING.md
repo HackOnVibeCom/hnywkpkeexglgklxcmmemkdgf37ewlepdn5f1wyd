@@ -1,146 +1,124 @@
-# AI-powered relevance matching (branch `feat/ai-matching`)
+# AI relevance matching + professional-experience assessment (branch `feat/ai-integration`)
 
-Status: **implemented and tested locally. NOT merged, NOT deployed, migration NOT applied, no OpenAI key configured, no paid API call ever made.**
-Everything here needs the owner's explicit approval before it goes anywhere near production (see "Rollout").
+Status: **implemented, integrated with the profile/qualification workstream (commit `2eaf716`) and tested locally. NOT pushed, NOT merged, NO migration applied, NOT deployed, NO OpenAI key configured, NO paid API call ever made.**
+Every production step needs the owner's explicit approval (rollout in section 11). Contract: [`AI_INTEGRATION_CONTRACT.md`](AI_INTEGRATION_CONTRACT.md) (owned by the profile workstream; section 11 there lists the two amendments made here).
 
 ## 1. What it does
 
-Discover gets an optional block, **"Recommended for your experience"**, above the unchanged full list (**"Browse all eligible tests"**).
-A tester who opted in gets campaigns picked from what they actually wrote (bio + the free-text experience answers), each with a plain-language
-reason, the verbatim quotes from their own profile it relied on, and what the campaign needs that the profile does not clearly show.
-Two testers in the same category with different experience get different lists. A student who writes about real programming is matched to
-developer tools; a prestigious school name alone matches nothing. When nothing is relevant the tester sees "No highly relevant tests found yet."
-(never filler), and the full list stays available.
+1. **Recommendations.** Discover's tab **"Recommended for you"** shows only campaigns that (a) the database says the tester can act on and (b) the AI judges genuinely relevant from the tester's own words, each with a plain reason, a verdict, the verbatim words it relied on and what is not covered. The other tab, **"Browse all eligible tests"**, is unchanged. Empty is a first-class answer ("No relevant recommendations right now").
+2. **Professional assessment.** For Tech-Savvy, Founders & Product Builders and Business & Office testers the AI reads the four free-text answers and either (a) records a qualification decision, (b) records "not qualified yet", or (c) asks for clarification and records nothing. It never requires credentials and never verifies anything: results are always "based on self-reported experience".
 
-**AI recommends. The existing backend authorizes.** Nothing in this feature can reserve, submit, pay, refund, qualify or change eligibility.
+**AI recommends and proposes. The database authorizes.** Eligibility (reservation trigger), credits, referrals, reservations and the only write path for qualification (`service_record_qualification`) are the profile/credit workstreams' code; nothing here can reserve, submit, pay, refund or activate a category by itself.
 
 ## 2. Architecture
 
 ```
-Browser (Discover)                                       Supabase                                       OpenAI
-  POST ai-match {"action":"recommend"}  --JWT-->  Edge Function ai-match
-                                                     1. verify JWT (platform verify_jwt + auth.getUser(token))
-                                                     2. RPC service_get_ai_profile(uid)   [profile workstream's contract v1, service_role]
-                                                        no consent => purge derived data + stop (model never called)
-                                                     3. RPC list_campaigns_v2()            [AS THE CALLER, user JWT]
-                                                        => the server's eligibility verdict; keep eligible && !in-progress, <= 30
-                                                     4. RPC ai_get_cache(uid): analysis + verdicts keyed by content hashes
-                                                     5. only if something is new/changed:
-                                                        RPC ai_reserve_run(...)  atomic per-user + global caps, min interval
-                                                        call 1 (profile changed)  -------------------------------->  structured experience (strict JSON)
-                                                        call 2 (new campaigns, ONE batch) ------------------------>  verdict per campaign (strict JSON)
-                                                     6. validate in code (grounding, whitelist, policy), cache, record tokens
-  <-- {status, recommendations[], understanding} --
+Browser (Discover tab / Profile panel)                    Supabase                                              OpenAI
+  POST ai-match {"action":"recommend"|"assess"} --JWT--> Edge Function ai-match
+                                                   0. verify JWT (platform verify_jwt + auth.getUser(token))
+                                                   1. ai_apply_erasure_events()      apply the contract's erasure events (global sweep)
+                                                   2. service_get_ai_profile(uid)    contract v1: consent, subject_ref, etag, participation_ready, category states, answers
+                                                      no consent => purge derived data, stop. participation_ready=false => profile_incomplete.
+                                          recommend:  list_campaigns_v2() AS THE CALLER => eligible only; ai_get_cache(uid, subject_ref);
+                                                      ai_reserve_run('match') ; step 1 profile->experience, step 2 ONE batch of campaigns  ----> strict JSON
+                                                      validate in code, cache under subject_ref, respond {status, items, generated_at, profile_etag}
+                                          assess:     pending professional categories only; thin/instruction-like answers handled in code with NO model call;
+                                                      ai_reserve_run('assess'); one call per category  --------------------------------------> strict JSON proposal
+                                                      decide in code; qualified/not_qualified -> service_record_qualification(version, hash read in step 2)
+                                                      needs_clarification -> ai_put_assessment_note (NOT a decision)
 ```
 
-* **Two model steps, both cached.** Step 1 turns the free text into a structured "experience representation" (areas / tools / domains, each with
-  verbatim evidence, plus what is missing). It runs only when the profile hash changes. Step 2 judges a *batch* of campaigns (never one call per pair)
-  and runs only for campaigns that are new or edited for this profile. A page refresh costs **zero** model calls.
-* **Cache keys are content hashes that also contain `POLICY_VERSION` and the model name**, not triggers: profile/answers change -> everything re-evaluated;
-  a campaign edit -> only that campaign; a prompt/validation fix (bump `POLICY_VERSION`) or a model change -> every old verdict expires.
-  Caches are per user (the RPCs only accept the id the function verified from the JWT).
-* **Eligibility is re-read on every request** from `list_campaigns_v2()` under the caller's own JWT, so a cached "good" verdict can never outlive a change
-  in eligibility, and an ineligible Targeted campaign is never sent to the model, returned, or shown (the UI filters again). The reservation trigger
-  `test_reservations_eligibility` remains the final gate when someone presses Start.
-* **Degradation.** Missing consent, thin profile, rate limit, a request already running, budget, OpenAI down/timeout/refusal/malformed output, function not
-  deployed, feature flag off: each yields a clear status and the plain Discover list works exactly as before. Anonymous onboarding is untouched; AI is never required.
+## 3. Contract compatibility (decisions)
 
-### Files
-| Area | Files |
+| Topic | Decision |
 |---|---|
-| Migration (additive, derived data only) | `supabase/migrations/20261115000500_ai_matching.sql` |
-| Edge Function | `supabase/functions/ai-match/index.ts` (Deno wiring), `supabase/functions/_shared/aiMatching/{engine,handler,openai,prompts,validate,profile,contract,categories,types,util}.ts` (pure, run in Node for tests), `supabase/config.toml` (`[functions.ai-match] verify_jwt = true`) |
-| Frontend (new, self-contained) | `src/lib/ai/{aiApi,types,flag}.ts`, `src/components/ai/AiRecommendations.tsx` |
-| Frontend edits to existing files | `src/pages/Discover.tsx` only (one import, one mount point, one heading) |
-| Tests | `supabase/tests/ai_matching.mjs`, `tests/unit/ai-engine.test.mjs`, `tests/browser/ai-ui.mjs`, runner wiring in `tests/browser/run.mjs`, `supabase/tests/package.json`, `package.json` |
+| `RecommendationsResponse` | One format: **their field names kept** (`status`, `items[{campaign_id, reason}]`, `generated_at`, `profile_etag`, statuses `unavailable / consent_required / profile_incomplete`) **+ optional extras** (`verdict`, `evidence[]`, `unsupported_requirements[]`, `understanding`) **+ three new "not available right now" statuses** (`rate_limited`, `busy`, `budget_reached`) and `detail` on `profile_incomplete`. `score` stays optional and is never produced (no numeric score exists). `src/lib/aiContract.ts` and `actionableRecommendations()` updated; Discover renders the extras inside their "Why this fits you" card. |
+| Discover | Their tabbed Discover is kept. The AI provider (`fetchAiRecommendations`) plugs into their existing seam; Discover only calls it with `participation_ready` **and** consent; their `actionableRecommendations()` still filters to the database's eligible rows. My earlier standalone block, `BrowseAllHeading` and `/experience` page are deleted. |
+| Consent | **One canonical interface:** their `ConsentCard` on Profile (`set_ai_consent(p_granted)`). My code has no consent UI or table. Their card now also states the withdrawal policy (section 6). |
+| Deletion / erasure | (a) immediate: `delete_my_ai_data()` is called by the UI after consent withdrawal and after "delete my answers"; (b) contract mechanism: `ai_apply_erasure_events()` reads `service_list_erasure_events` after my own cursor, deletes everything held for each `subject_ref`, **then** advances the cursor, in one transaction, at the start of every request; (c) `ai_purge_user` whenever a request sees no consent; (d) account deletion cascades. Optional: schedule `select public.ai_apply_erasure_events()` with pg_cron so a withdrawn tester who never returns is erased within minutes even with no traffic. |
+| Cache keys | Rows are bound to the tester's **current `subject_ref`** (re-consent rotates it, so old rows are dead) and hashed with the contract **`etag`**, `POLICY_VERSION` and the model name. Any consent / bio / category / answer / decision change, prompt change or model change misses the cache. Eligibility is never cached. |
+| `participation_ready` | `false` => `profile_incomplete` (no model call, no feed read). Matching uses the bio + answers of **ACTIVE** categories only: a professional category pending or not qualified does not count for matching, exactly as it does not for targeted eligibility. |
+| Campaign source | `list_campaigns_v2()` under the caller's JWT (the caller's own verdict, already committed); `service_list_eligible_campaigns` is equally valid and was not needed. |
+| Migration order | `20261115000500_ai_matching.sql` has **no migration-time dependency** on migration 8 (late-bound plpgsql; tested by applying it on migrations 1-7 alone). At runtime the function needs migration 8's `service_*` functions. Apply 8 first. |
 
-## 3. Model and API choice (verified against OpenAI's official docs on 2026-11-15)
+## 4. Professional assessment (rubric r1)
 
-* **API:** Responses API (`POST /v1/responses`) with Structured Outputs: `text.format = {type:"json_schema", name, strict:true, schema}`,
-  `store:false`, `max_output_tokens` (which *includes* reasoning tokens), no sampling parameters.
-* **Default model: `gpt-6-luna`** (OpenAI's models page positions it for "cost-sensitive, high-volume workloads"; listed at $0.10 input / $0.01 cached /
-  $0.50 output per 1M tokens, 1.05M context, 128K max output; `reasoning.effort` supports none/low/medium/high/xhigh/max). Default effort `low`.
-  Configurable with `OPENAI_MODEL` / `OPENAI_REASONING_EFFORT` (changing the model invalidates cached verdicts by design).
-* **Rejected:** `gpt-5-mini` / `gpt-5-nano` (cheaper on paper but **deprecated, shutdown Dec 11 2026**), `gpt-4.1-mini` / `gpt-4o-mini` (deprecated, Jan 14 2027),
-  `gpt-5.4-mini` (works, 7.5x the input price), flagship models (cost without need).
-* **Not yet verified (needs the approved smoke test):** that `gpt-6-luna` accepts exactly this strict schema + `reasoning.effort:"low"` combination on this account,
-  real latency, and real token counts per run. The docs index I read did not include luna's own page. Pricing/availability can change: re-check before enabling.
-* **Cost sketch (estimate, not measured):** a full run is ~3-4k input tokens for step 1 and ~5-12k for step 2 plus a few thousand output/reasoning tokens
-  => roughly **$0.005-0.01 per full run**, near zero for cached refreshes. Ceilings regardless: 12 model calls / user / day, 1500 / day globally, 5M tokens / day
-  globally (env-configurable). The token cap is checked before a run and recorded after it, so concurrent runs can overshoot it slightly; the **call cap and an
-  OpenAI project spend limit are the hard ceiling.**
+* **What is assessed:** whether the answers contain plausible, relevant, sufficiently substantive **self-reported** experience. **Not** an exam; **no** degree, school, employer, title, years or advanced expertise is required; small, personal, informal and hobby experience counts. The category rubrics (four public criteria each, `rubrics.ts`) are returned with every result and shown in the UI ("What we look for"). The three categories use the contract's own question wording (q1-q4).
+* **The model only proposes** (strict JSON: outcome `qualified / not_yet / unclear`, confidence, per-criterion `yes/partly/no` with a verbatim quote, `plausibility_concern`, `instruction_like_text`, clarification questions). **Code decides** (`assess.ts`):
+  * **qualified** only if the model says so, confidence is not low, no flags, **and** at least two distinct criteria are backed by quotes that are verbatim, at word boundaries, contain a content word and sit in **at least two different answers**.
+  * **not_qualified** only if the model says "not yet" with confidence, no flags and fewer than two grounded criteria (an honest "I have little experience" lands here; message: you can still take open tasks, add detail only if true).
+  * **needs_clarification** for everything else (unsure, vague, contradictory, thin, instruction-like, a "qualified" claim the evidence does not back). **Not recorded:** the category stays pending, nothing is invented either way, the tester gets neutral follow-up questions. Cached per `answers_hash` so unchanged answers are never paid for twice.
+  * Thin answers (< 20 words in total) and instruction-like text are handled **before** any model call.
+* **The write path:** `service_record_qualification` with the `question_version` and `answers_hash` that were read; the database refuses stale decisions, missing consent, non-professional categories and any assessment key other than `model / rubric_version / summary / confidence`. The stored `summary` is a **fixed sentence** (no model prose, never answer text). The browser can only send `{"action":"assess"}`: no category, no status, no decision (400 otherwise); calling the database function with a user token is `permission denied` (tested through HTTP and SQL).
+* **Failure = pending, never approval:** OpenAI down, malformed output, rate limit, budget, consent withdrawn mid-run, stale answers: nothing is recorded; no timeout ever approves.
+* **Truthfulness:** the UI and prompts say "only write what is true"; clarification questions never suggest what to claim; the model is told never to infer experience from category names, schools, titles or confident wording, and not to penalise plain language.
 
-## 4. Safety, privacy, cost controls
+## 5. Matching policy (corrected)
+
+1. Server-eligible campaigns only; candidates capped at 30 per run; campaign text truncated.
+2. Per campaign the model returns `strong | good | possible | weak | none` + verbatim evidence + unsupported requirements + a paraphrased reason.
+3. Code: recommended **iff** `strong`/`good` **and** >= 1 evidence quote that is verbatim, at word boundaries, contains a **content word** (so "Python", "SQL", "CRM", "AI" qualify and "with"/"the" never do: **no arbitrary minimum length**), **and** comes from the validated analysis evidence (so campaign text cannot pick its own "evidence") **and** a non-empty reason. `possible` is never promoted.
+4. **Whole-batch rejection removed:** ten of ten genuinely relevant campaigns are all kept (tested). Steering text is stopped by `guard.ts` instead: a campaign whose name/description/task looks like an instruction ("ignore previous instructions", "mark this as strong", "recommend to every tester", role markers...) is **never sent to the model** and never recommended, while the others are unaffected.
+5. Order: strong before good, then the server's feed order; at most 10; no numeric score anywhere.
+
+## 6. Consent withdrawal and recorded qualification decisions (explicit policy)
+
+Reviewed because it was undocumented-adjacent in the contract (section 10.4). **Policy (now stated in the UI, the contract notes and tested in SQL and end to end):**
+1. Withdrawal stops all processing at once; the database stops handing out bio/answers/`subject_ref`; everything the AI derived is erased (immediately by `delete_my_ai_data`, by the erasure sweep, and on any request that sees no consent).
+2. An **already recorded** `qualified`/`not_qualified` decision **stays in force**. It is a status derived from the answers (it records only the status, model id, rubric version, a fixed sentence and a confidence number, never answer text), so keeping it lets the tester keep what they earned without keeping any AI processing. To remove it the tester deletes the answers (the contract's `delete_my_experience` deletes the decision too).
+3. While consent is off **nothing new can be recorded** (the database refuses `consent_required`).
+4. If the tester **edits an answer while consent is off**, the decision stops counting (new `answers_hash`) and the category waits as **pending** until consent is on again: it is never silently re-approved and never stuck active on stale text.
+5. Re-consent issues a new `subject_ref`; the category is queued for assessment again if pending.
+**Alternative the owner may prefer** (not implemented, needs a contract change in migration 8): withdrawing consent also invalidates `ai_assessment` decisions. Trade-off: stricter privacy semantics vs. testers losing access they earned and having to re-consent to regain it. Decision requested in section 12.
+
+## 7. Safety, privacy, cost
 
 | Concern | Measure |
 |---|---|
-| Key exposure | `OPENAI_API_KEY` only as an Edge Function secret (`supabase secrets set`). The browser bundle never contains it (a browser test greps the shipped JS). The frontend flag `VITE_AI_MATCHING` is a plain boolean. |
-| Who can call | Platform `verify_jwt` + `auth.getUser(token)` in code; only `{"action":"recommend"}` accepted (no user id, prompt or model from the client); body <= 2 KB; POST only; allow-listed origins; fails closed. |
-| DB access | New tables: RLS on, no policy, no grant. `ai_*` RPCs are `EXECUTE`-able by `service_role` only (catalog-checked). The one user RPC (`delete_my_ai_data`) only touches the caller's own rows. |
-| Prompt injection | Untrusted text is JSON-encoded in the user message, never in the system prompt. **The real defence is code (`validate.ts`):** a match quote must be >= 12 characters, sit at word boundaries, and be text the *validated analysis* already quoted from the tester (so campaign text cannot pick its own "evidence" or reuse a stop word like "with"); refs are whitelisted; enums strict; recommended only for `strong`/`good` with grounded evidence and an explanation; `possible` is never promoted; a batch of >= 5 where >= 80% come back strong/good is distrusted entirely; model text has links, e-mail addresses, phone numbers, bare domains and markdown stripped and is rendered as plain text. **Residual risk (be honest):** grounding proves the cited words are the tester's, not that the campaign is truly relevant; a founder who writes steering text can still try to nudge the verdict for other testers, but not past the checks above, and never past server-side eligibility. This is why strong/good verdicts need the real-model smoke test review. |
-| Hallucination | Items without a verbatim quote are dropped; if nothing is grounded, the summary is dropped and the match call is skipped (and the empty result is cached). |
-| Privacy | Explicit opt-in listing exactly what is sent (bio, category labels, question/answer pairs; campaign name/description/task/audience), what is not (user id, nickname, tokens, qualification state), a request not to enter sensitive personal data, self-reported-not-verified, server still authorizes, opt-out deletes derived data. `store:false`; OpenAI's documented API policy: no training by default, abuse-monitoring logs up to 30 days. Nothing claims verification. Derived data (analysis incl. short verbatim quotes, verdicts) is erased by `delete_my_ai_data()` when the tester turns AI off, and by the function itself on any request where consent is not granted; deleting a profile cascades. |
-| Cost | Hash caches; batched step 2; <= 30 campaigns and bounded text per run; `max_output_tokens` per call; atomic `ai_reserve_run` BEFORE spending; 45 s timeout; no retries; a cached analysis with nothing in it uses no allowance; tokens recorded. |
-| Isolation | Cache rows keyed by verified user id; the engine never mixes users; unit tests assert one tester's text never appears in another's request and that another user's cache rows cannot satisfy a different profile hash. |
-| Operations | Coarse failure codes (`model_timeout`, `analysis_malformed`, `rpc <name> failed`, ...) go to the function log, never prompts or user text. |
+| Secrets | `OPENAI_API_KEY` and the service-role key exist only as Edge Function secrets. A browser test greps the shipped bundle for key material. `OPENAI_BASE_URL` is honoured **only for loopback hosts** (test mocks), so a misconfiguration can never redirect the key. |
+| Who can call | Platform `verify_jwt` + `auth.getUser(token)`; strict body (`{"action":"recommend"}` / `{"action":"assess"}` only); <= 2 KB; POST; allow-listed origins; fails closed; verified against a real Deno server (401 for unknown/garbage tokens, 400/413/405/403 cases). Each action has its **own kill switch** (`AI_MATCHING_ENABLED`, `AI_ASSESSMENT_ENABLED`). |
+| What OpenAI sees | Bio, category labels, question/answer pairs (recommend: active categories only; assess: that professional category only) and campaign name/description/task/audience. **Never** user id, nickname, token, `subject_ref`, etag, qualification state, campaign UUIDs. `store:false`. Provider retention (abuse-monitoring up to 30 days; no training by default per OpenAI's API policy) is disclosed in the opt-in copy. Requests are made only with `consent.ai_processing = true` read at request time. |
+| Injection | Untrusted text is JSON-encoded in the user message only; system prompts say to ignore embedded instructions; **code is the defence**: grounded quotes, ref whitelist, strict enums, `guard.ts` pre-filters (campaign text and tester answers), content-word rule, quotes restricted to validated evidence, model text stripped of links/e-mails/phones/markdown, rendered as plain text. Residual risk: self-report can be false; a tester can write instructions in their own profile and only affects their own results. |
+| Cost | Hash caches; one batch per run; per-user daily call cap (**shared** by both kinds), global daily call cap and global token budget, per-kind minimum interval, all reserved atomically **before** spending; 45 s timeout; no retries; `max_output_tokens` (4000 / 8000 / 3000). `AI_MIN_RUN_INTERVAL_SECONDS=0` is honoured (bug found by the Deno run: zero used to fall back to 15). The token cap is checked before a run and recorded after, so concurrent runs can overshoot it slightly: **the call cap and an OpenAI project spend limit are the hard ceiling.** |
+| Logs | Coarse codes only (`model_timeout`, `assessment_malformed`, `rpc <name> failed`, ...). Verified by the Deno run: no keys, tester text or ids in the function log. |
 
-## 5. Integration with the profile / qualification workstream (Agent #1)
+## 8. Model, API, cost (verified on OpenAI's official docs, 2026-11-15)
 
-**Decision (changed after the security review surfaced their work):** this branch does **not** own consent, free-text answers, the question bank or any
-answer-entry UI. The profile workstream already built them (uncommitted on their branch when this was written): tables `ai_consents` and `experience_answers`,
-RPCs `set_ai_consent(boolean)`, `get_my_experience`, `save_experience_answers`, `delete_my_experience`, and the server-only
-`service_get_ai_profile(user_id)` (contract v1, `src/lib/aiContract.ts` on their branch). Duplicating that would have collided (same function name `set_ai_consent(boolean)`,
-two consent tables, two question banks). So this branch is a **consumer** through one adapter file, `supabase/functions/_shared/aiMatching/contract.ts`:
+Responses API, strict Structured Outputs, `store:false`, default **`gpt-6-luna`** ($0.10 / $0.50 per 1M tokens; `gpt-5-mini/nano` are deprecated, shutting down Dec 11 2026), `reasoning.effort` default `low`; model and effort are env-configurable (changing the model invalidates caches). **Unverified until the approved smoke test:** that luna accepts this exact schema + effort. **Estimated cost:** ~$0.005 per full recommendation run, ~$0.002 per assessed category; `scripts/ai-smoke-test.mjs` (synthetic data; dry run by default; needs `--execute --i-approve-paid-api-calls` and a key) is estimated at **~9 requests, about $0.006, hard upper bound ~$0.04** (9 x the 8000-token output cap). Prices change: re-check before enabling.
 
-| Needs from them | How it is used |
-|---|---|
-| `service_get_ai_profile(p_user_id uuid) -> jsonb` with `contract_version = 1` | the Edge Function maps it (`mapContractProfile`): `consent.ai_processing`, `profile.bio`, `profile.categories`, and for each selected category `answers[] = {question, answer}` (already withheld by their function unless consent is granted). Everything else (qualification state, hashes, `subject_ref`, etag) is dropped before the model. An unknown `contract_version` fails closed. |
-| `set_ai_consent(p_granted boolean)` | the only consent write; the UI calls it. The function reads consent through the contract on every request. |
-| `list_campaigns_v2()` (migration 7, committed) | candidates + eligibility, called under the caller's JWT. Their migration replaces `tester_eligibility`, so changes to eligibility are inherited automatically. (Their `service_list_eligible_campaigns` would also work; `list_campaigns_v2` was kept because it is already committed and needs no extra dependency.) |
-| Free-text answers 15-800 chars, four per category | accepted up to 800 characters per answer. |
+## 9. Files and migrations
 
-**What this branch adds that they need to wire (small):**
-* `delete_my_ai_data()` (migration 9): their `set_ai_consent(false)` / `delete_my_experience` do not know about the AI caches. This branch's UI calls `delete_my_ai_data()` after turning AI off,
-  and the function purges again whenever it sees no consent, so nothing derived lingers. If they want deletion to be atomic, call `public.ai_purge_user(uid)` from their `set_ai_consent(false)` and `delete_my_experience`
-  bodies (or add an `AFTER DELETE` trigger), keeping it a one-line coupling.
-* **Copy that must change when both merge** (not edited here: their files): `src/pages/Profile.tsx` still says the profile "is only used to order the task list for you"; with AI on, the bio and answers are
-  sent to OpenAI and stored as derived data. Make that line conditional on `VITE_AI_MATCHING` / consent. `README.md` ("No AI is involved") likewise. If any question text suggests health or finances
-  (the first draft of this branch's own bank did, which the review flagged), reword it: the opt-in now also asks people not to enter sensitive personal data.
-* Mapping their statuses to this function's: `insufficient_profile` ~ their `profile_incomplete`; this function additionally returns `busy`, `rate_limited`, `budget_reached`.
-  Their `RecommendationsResponse` type in `aiContract.ts` (`items[{reason, score?}]`) differs from this function's response (`recommendations[{verdict, explanation, evidence[], unsupported_requirements[]}]`, no numeric score on purpose);
-  the browser code that ships here consumes this function's shape, so their type should be updated to match rather than the other way round.
-* Their contract also defines an *assessment* service for professional qualification (`service_list_pending_assessments`, `service_record_qualification`). **That is out of scope for this branch**: the AI here never decides or influences qualification.
-* Migration order: `20261115000500_ai_matching.sql` has **no migration-time dependency** on their tables (only on `profiles` and `campaigns`), so it applies in any order. At **runtime** the Edge Function needs their `service_get_ai_profile`;
-  until that function exists the AI block shows "not available right now" and nothing else changes.
-* Files both branches touch (trivial merge): `tests/browser/run.mjs` (suite list + a 4th build with `VITE_AI_MATCHING=1`), `supabase/tests/package.json`, `package.json`, `src/pages/Discover.tsx` (one import + mount point + heading).
+* Migration: `supabase/migrations/20261115000500_ai_matching.sql` (additive; derived data + erasure + usage; no consent/answers/qualification tables).
+* Function: `supabase/functions/ai-match/index.ts`; engine `supabase/functions/_shared/aiMatching/{engine,assess,handler,contract,validate,guard,rubrics,prompts,openai,profile,categories,types,util}.ts`; `supabase/config.toml` (`[functions.ai-match] verify_jwt = true`).
+* UI: `src/lib/ai/{aiApi,flag}.ts`, `src/components/ai/{RecommendationDetails,AssessmentPanel}.tsx`; edits: `src/pages/Discover.tsx`, `src/pages/Profile.tsx`, `src/lib/api.ts` (consent withdrawal / answer deletion also erase AI data, no-op unless the flag is on), `src/components/Experience.tsx` (withdrawal policy text), `src/lib/aiContract.ts`, `src/lib/recommendations.ts`.
+* Tests/tools: `tests/unit/{ai-engine,ai-assess,run-all}.mjs`, `supabase/tests/ai_matching.mjs`, `tests/deno/{e2e.mjs,run-function.ts}`, `tests/browser/ai-ui.mjs`, `scripts/ai-smoke-test.mjs`, `package.json` scripts `test:deno`, `check:deno`.
 
-## 6. How relevance is decided (and weak matches filtered)
+## 10. Tests and runtime verification (all local, mocked OpenAI)
 
-1. Server-eligible campaigns only (step 3 above).
-2. Model verdict per campaign: `strong | good | possible | weak | none`, each with verbatim evidence, unsupported requirements and an explanation.
-3. Code policy (`validate.ts`): recommended **iff** verdict is `strong`/`good` **and** >= 1 evidence quote passes the quote rules **and** the explanation is non-empty **and** the batch is not suspiciously uniform.
-   A claimed `strong` with an invented quote is dropped entirely. `possible` ("uncertain") is never shown. No numeric score exists anywhere, so no score can override evidence or eligibility.
-4. Ordering: `strong` before `good`, otherwise the server's own feed order. At most 10 shown.
-5. Empty list -> "No highly relevant tests found yet." and the full list remains.
+Unit 79 + 139 + 62; real-Postgres (PGlite, migrations 1-9) 119 / 118 / 91 / 121 / 103 / 217 / 331 (profile) / 137 (AI integration); **Deno end to end 81** (the real unmodified `index.ts` under Deno 2.9.6 + real `npm:@supabase/supabase-js`, a PostgREST/Auth bridge backed by PGlite running all migrations, a mock OpenAI; real HTTP); browser 58 / 77 / 62 / 81 / 86 / 82 / 65; CSP 5; typecheck + build clean; `deno check` clean.
+**Not verified:** the real model's judgement; the hosted Supabase Edge Runtime / `supabase functions serve` (no CLI or Docker here: Deno itself is verified, the platform wrapper is not); real PostgREST (the bridge mimics its RPC conventions); real concurrency (PGlite is single-connection; locks/`skip locked` are reasoned, not raced).
+Known environment quirk: `tests/unit/matching.test.mjs` intermittently crashes Node's teardown on Windows AFTER passing (also on the profile workstream's own commit); `tests/unit/run-all.mjs` judges suites by their summary line.
 
-## 7. Rollout (every step needs the owner's explicit approval; none was done)
+## 11. Configuration
 
-Each step is independently reversible and the UI is inert until the last one.
-1. Review / merge: PR #3 (`feat/matching-v2`) first, then the profile workstream's contract (needs `service_get_ai_profile`), then this branch.
-2. Apply migration `20261115000500_ai_matching.sql` (`supabase db push --dry-run --remote` first). Additive; rollback = leave it, nothing uses it.
-3. Create an OpenAI project key with a **monthly spend limit**; `supabase secrets set OPENAI_API_KEY=... ` and `AI_MATCHING_ENABLED=true` (secrets live only in Supabase; never in Git / Vercel).
-   Optional: `OPENAI_MODEL`, `OPENAI_REASONING_EFFORT`, `AI_USER_DAILY_CALLS`, `AI_GLOBAL_DAILY_CALLS`, `AI_GLOBAL_DAILY_TOKENS`, `AI_MIN_RUN_INTERVAL_SECONDS`, `AI_ALLOWED_ORIGINS` (add `http://localhost:5173` for local dev).
-4. `supabase functions serve ai-match` once locally (the function has never been run under Deno), then `supabase functions deploy ai-match` (verify_jwt is on via `config.toml`).
-5. **Smoke test with one throwaway identity** (explicit approval; real paid API calls): confirm the model accepts the schema, latency, token counts, that two different profiles get different lists, and read the actual explanations for steering/odd text. Check the OpenAI usage dashboard against `ai_usage`.
-6. Set `VITE_AI_MATCHING=1` as a Vercel Production env var (Config type) and deploy the UI. **Kill switches, fastest first:** `supabase secrets set AI_MATCHING_ENABLED=false` (UI shows "not available", list unaffected) -> unset `VITE_AI_MATCHING` + redeploy -> remove the function.
-Do **not** change Supabase Auth/CAPTCHA, Cloudflare, WAF or Vercel protection for this.
+Supabase function secrets (`supabase secrets set`, never Git/Vercel): `OPENAI_API_KEY`, `AI_MATCHING_ENABLED=true`, `AI_ASSESSMENT_ENABLED=true`; optional `OPENAI_MODEL`, `OPENAI_REASONING_EFFORT`, `AI_USER_DAILY_CALLS` (12), `AI_GLOBAL_DAILY_CALLS` (1500), `AI_GLOBAL_DAILY_TOKENS` (5000000), `AI_MIN_RUN_INTERVAL_SECONDS` (15; 0 allowed), `AI_ALLOWED_ORIGINS`. Vercel build env (Production only, a plain boolean): `VITE_AI_MATCHING=1`. Create the OpenAI project key **with a monthly spend limit**.
 
-## 8. Known limitations / honest notes
+## 12. Rollout (each step needs the owner's explicit approval; none was done)
 
-* **Not run under Deno.** No `deno`/Supabase CLI on the build machine: `index.ts` (thin wiring) was reviewed (twice) but never executed; all logic it calls is unit-tested in Node. Run `supabase functions serve ai-match` before deploying.
-* **Model quality is unmeasured.** Automated tests use a deterministic stand-in model, so they prove the pipeline and the safety policy, not the semantic quality of `gpt-6-luna`'s judgement. The uniformity guard and the 12-character quote rule may need tuning on real outputs.
-* Anonymous identities are cheap (documented project risk): per-user caps can be multiplied by creating identities; the global caps and the OpenAI spend limit are the real ceiling, and exhausting the global cap only degrades everyone to the plain list.
-* A failed model step is not negative-cached: a persistently unparseable profile can spend up to the per-user cap (12 calls/day, 15 s apart) before it stops. Accepted for the MVP.
-* Free-text "experience" is self-reported and unverified; the UI says so.
-* The `list_campaigns_v2()` feed is capped at 50 rows and the AI looks at the first 30 eligible ones (the server's ordering puts category-matching tasks first).
-* No answer-entry UI ships in this branch: until the profile workstream's answers exist, only the 280-character bio feeds the AI (`insufficient_profile` is returned for very thin profiles).
+1. Merge the profile workstream (PR #3 / `feat/matching-v2` incl. migration 8) and then this branch (`feat/ai-integration`).
+2. Apply migration 8 (`20261115000300`) **first**, run `docs/verify-migration8.sql`; then apply `20261115000500` (`supabase db push --dry-run --remote` first). Both are additive for the UI: nothing calls them yet.
+3. Deploy the UI with the flag **off** (`VITE_AI_MATCHING` unset): zero AI requests; the profile workstream's UI is live.
+4. Set the OpenAI key (+ spend limit) and the two enable secrets **disabled**; `supabase functions serve ai-match` once locally, then `supabase functions deploy ai-match`.
+5. Real smoke test: `scripts/ai-smoke-test.mjs --execute --i-approve-paid-api-calls` (synthetic data, ~$0.01), **read the output**; then one throwaway identity end to end on the real project (consent, answers, assessment, recommendations, withdrawal) and compare the OpenAI dashboard with `ai_usage`.
+6. Enable `AI_ASSESSMENT_ENABLED=true`, then `AI_MATCHING_ENABLED=true`, then set `VITE_AI_MATCHING=1` and redeploy the UI. Optionally schedule `ai_apply_erasure_events()` with pg_cron.
+Kill switches, fastest first: set either `AI_*_ENABLED=false` (UI shows "not available", every list and the app are unaffected; recorded decisions stay) -> unset `VITE_AI_MATCHING` + redeploy -> remove the function. Do not change Supabase Auth/CAPTCHA, Cloudflare, WAF or Vercel protection.
+
+## 13. Remaining risks and open decisions
+
+* **Decision needed:** consent-withdrawal vs. recorded decisions (section 6; default implemented = decisions persist).
+* **Decision needed:** whether the AI assessment should run **automatically** after answers are saved (today: the tester presses "Check my answers now"; automatic would need a trigger/worker and raises cost/consent-surprise questions).
+* Real model quality and `gpt-6-luna` schema acceptance are unmeasured (smoke test). The content-word rule and `guard.ts` patterns may need tuning on real outputs; `guard.ts` is intentionally narrow, so novel steering phrasing can slip past it (the grounded-evidence checks still apply).
+* Anonymous identities are cheap: per-user caps multiply; the global caps and the OpenAI spend limit are the ceiling; exhausting the global cap only degrades everyone to the plain lists.
+* A failed model step is not negative-cached: a persistently bad profile can use up to its daily cap.
+* Self-reported answers can be dishonest; the assessment is a plausibility filter, not a verification, and the UI says so.
+* Provider-side retention (up to 30 days of abuse-monitoring logs) is outside our control; deletion at the provider is not signalled by the database.

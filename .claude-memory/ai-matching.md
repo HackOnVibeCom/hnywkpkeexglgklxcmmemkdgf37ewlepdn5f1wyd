@@ -1,36 +1,37 @@
-# AI-powered relevance matching — project memory (branch `feat/ai-matching`)
+# AI matching + professional assessment — project memory (branch `feat/ai-integration`)
 
-_Written 2026-11-15. Separate file on purpose: `decisions.md` / `project-state.md` are being edited on `feat/matching-v2` by another agent; fold this in after both merge._
+_Updated 2026-11-15 after integrating with the profile workstream (`feat/matching-v2` @ 2eaf716). Separate file on purpose: fold into `decisions.md` / `project-state.md` after both branches merge. Full detail: `docs/AI_MATCHING.md`._
 
 ## State
-Implemented + tested locally on `feat/ai-matching` (based on `feat/matching-v2` @ 3afe364). **NOT merged, migration 9 NOT applied, Edge Function NOT deployed, no OpenAI key configured, no real API call ever made, `VITE_AI_MATCHING` not set anywhere.** Full design, data contract, rollout and kill switches: `docs/AI_MATCHING.md`.
+Implemented + integrated + tested locally. **NOT pushed, NOT merged, migrations 8 and 9 NOT applied, function NOT deployed, no OpenAI key, no paid API call ever made, `VITE_AI_MATCHING` unset everywhere.** `feat/ai-matching` (d076c99) is the superseded pre-integration branch.
 
-## ADR-018 — AI recommends, the existing backend authorizes
-Decision: the AI only ranks/explains campaigns that `list_campaigns_v2()` (called under the CALLER's JWT) already marks eligible. It never grants access and never touches credits, reservations, referrals or screening (a unit test asserts the AI code does not even name those RPCs).
-Reason: eligibility (migration 7 trigger) is the security boundary; a score/LLM must not be able to override it.
-Rejected: letting the function compute eligibility itself (duplicate logic would drift from migration 8); numeric match scores (can override evidence).
-Consequence: any future eligibility change is inherited automatically; the AI block can disappear without affecting the product.
+## ADR-018 — AI recommends / proposes, the database authorizes
+Recommendations only rank campaigns that `list_campaigns_v2()` (under the CALLER's JWT) marks eligible; a recorded professional decision only goes through the contract's `service_record_qualification`. A unit test asserts the AI code never names reservation/credit/referral/profile-write/consent-write functions, and a Deno e2e asserts the exact RPC set the function touches.
 
-## ADR-019 — Model/API: OpenAI Responses API + strict JSON schema, default `gpt-6-luna`
-Verified on OpenAI's official docs 2026-11-15. `gpt-5-mini/nano` are deprecated (shutdown 2026-12-11), `gpt-4.1-mini`/`gpt-4o-mini` 2027-01-14. luna = cost-sensitive tier ($0.10/$0.50 per 1M). Model + reasoning effort are env-configurable. **Unverified until the approved smoke test:** that luna accepts this exact schema + `reasoning.effort:"low"`. `store:false`; `max_output_tokens` includes reasoning tokens (size budgets accordingly).
+## ADR-019 — Model/API: OpenAI Responses API, strict JSON schema, default `gpt-6-luna`
+Verified on OpenAI's official docs 2026-11-15 (`gpt-5-mini/nano` deprecated, shutdown 2026-12-11). Env-configurable (`OPENAI_MODEL`, `OPENAI_REASONING_EFFORT`). `store:false`; `max_output_tokens` includes reasoning tokens. **Unverified until the approved smoke test** (`scripts/ai-smoke-test.mjs`, synthetic, dry-run by default): schema + effort acceptance, real quality.
 
-## ADR-020 — Trust nothing the model returns (code-level policy)
-Evidence quotes must appear verbatim in the tester's own text; refs whitelisted; strict enums; recommended only for strong|good with grounded evidence + explanation; `possible` never promoted; model text stripped of URLs/markdown and rendered as plain text. Prompt text is only a first line of defence.
+## ADR-020 — Trust nothing the model returns (code is the defence)
+Quotes must be verbatim, at word boundaries, contain a content word, and come from the validated analysis evidence (no arbitrary minimum length; the old whole-batch "uniformity" rule was REMOVED). Steering text is stopped by `guard.ts` (campaign text never sent to the model; tester answers never qualify). Model text is stripped of links/e-mails/phones and rendered as plain text.
+
+## ADR-021 — UI ships dark behind `VITE_AI_MATCHING=1`
+Without it: zero AI requests, no assessment panel, no extra RPC (existing browser suites assert zero console errors). Lets the UI deploy independently of migrations/function/key.
 
 ## ADR-022 — Consumer of the profile workstream's contract, no duplicate storage
-Found during security review: the other workstream (uncommitted) already owns consent (`ai_consents`, `set_ai_consent(boolean)`), free-text answers (`experience_answers`) and `service_get_ai_profile` (contract v1). This branch keeps only AI-derived data (analysis, verdicts, usage) + `delete_my_ai_data()` and reads their data through ONE adapter (`_shared/aiMatching/contract.ts`; unknown contract version fails closed). Same-name collision (`set_ai_consent(boolean)`) avoided by deleting my own consent/answers/question bank/`/experience` page.
-Consequence: runtime dependency on `service_get_ai_profile` (until then the AI block says "not available"); no migration-time dependency.
+Consent (`ai_consents`, `set_ai_consent(p_granted)`), answers, qualification decisions and the erasure-event log belong to migration 8. My migration 9 stores only AI-derived data keyed by `subject_ref`. ONE adapter (`_shared/aiMatching/contract.ts`) knows their shape; unknown contract version fails closed. One consent UI (their Profile card).
 
-## ADR-021 — Frontend ships dark behind `VITE_AI_MATCHING=1`
-Without it the app makes zero AI requests (not even a 404 from a missing RPC) and Discover is byte-for-byte the old page. Lets the UI deploy independently of migration/function/key. Existing browser suites assert zero console errors, which is why the flag exists.
+## ADR-023 — Professional assessment (rubric r1)
+Model proposes, code decides: qualified needs grounded evidence in >= 2 DIFFERENT answers + non-low confidence + no flags; honest beginners -> not_qualified (kind); unsure/vague/injection/thin -> needs_clarification, NOT recorded (category stays pending). Stored decision = model id + rubric version + FIXED sentence + numeric confidence, never answer text. Triggered by the tester ("Check my answers now"), not automatically. No credentials ever required; "self-reported, not verified" everywhere.
+
+## ADR-024 — Consent withdrawal vs. recorded decisions (documented, tested)
+Withdrawal erases everything the AI derived and stops processing; an ALREADY recorded decision stays in force (status, not processing); nothing new is recorded while off; editing answers while off makes the category pending until re-consent; deleting answers deletes the decision. Alternative (invalidate decisions on withdrawal) needs a migration-8 change: owner decision pending.
 
 ## Gotchas
-- Cache invalidation is by content hash incl. POLICY_VERSION + model name (bump POLICY_VERSION when prompts/validation change). Opt-out: UI calls `delete_my_ai_data()`; the function purges again whenever it sees no consent. Answers/consent are owned by the profile workstream.
-- Cost ceilings are enforced in Postgres (`ai_reserve_run`) BEFORE spending; anonymous identities are cheap, so the **global** caps + an OpenAI project spend limit are the real ceiling.
-- `index.ts` (Deno) has never been executed (no deno/supabase CLI locally). Run `supabase functions serve ai-match` before deploying.
-- Edge Function must use the exact RPC arg names in `index.ts` (`p_user`, `p_input_hash`, ...); a unit test pins the set of RPCs it reaches.
-- Writing files on this machine: `\n` / `\\` escapes inside tool inputs got mangled twice (raw newlines inside string literals); prefer char codes / re-read after writing, run `node --check`.
-- Tests: `tests/unit/ai-engine.test.mjs` (140, mocked model), `supabase/tests/ai_matching.mjs` (76, PGlite), `tests/browser/ai-ui.mjs` (57, stubbed). No test measures the real model's judgement.
+- Erasure: `ai_apply_erasure_events()` (reads the contract's events, deletes by subject_ref, THEN advances the cursor, one transaction) runs at the start of every request; optionally schedule it with pg_cron.
+- `AI_MIN_RUN_INTERVAL_SECONDS=0` must be honoured (the Deno e2e found `int()` rejecting 0).
+- `index.ts` type-checks and runs under Deno 2.9.6 (`npm run check:deno`, `npm run test:deno` with `DENO_BIN`); the hosted Supabase Edge Runtime / CLI was NOT available.
+- Tool quirks on this machine: `\n` and `\\` escapes in heredocs/tool inputs get mangled -> write scripts with the file tool; Windows `.bin/deno` is a shim, use the real exe (`node_modules/@deno/win32-x64/deno.exe`). `tests/unit/matching.test.mjs` intermittently crashes Node teardown AFTER passing (also on 2eaf716): use `tests/unit/run-all.mjs`.
+- Tests: unit 79+140+62; DB 119/118/91/121/103/217/331/137; Deno e2e 81; browser 58/77/62/81/86/82/65; CSP 5.
 
 ## Next logical work
-Real-model smoke test (approval + key), tune prompts on real outputs, founder-side "who might fit" hint, shared answers across categories, per-category weighting. Not started: anything touching payments/identity verification (out of scope).
+Approved smoke test + prompt tuning on real outputs; optional automatic assessment after save; pg_cron schedule for the erasure sweep; negative-caching of failed steps; founder-side hints.

@@ -10,18 +10,31 @@
 import { cleanText, isRecord, LIMITS, normForQuote } from './util.ts';
 import type { Analysis, AreaItem, EvidenceItem, MatchResult, Verdict } from './types.ts';
 
-/** Analysis evidence may be short (a tool name); a MATCH quote must be a real phrase, not a stop word like "with". */
-const MIN_ANALYSIS_QUOTE_CHARS = 4;
-const MIN_MATCH_QUOTE_CHARS = 12;
 const VERDICTS: readonly string[] = ['strong', 'good', 'possible', 'weak', 'none'];
 const LEVELS: readonly string[] = ['stated_hands_on', 'stated_exposure', 'interest_only'];
 
 /**
- * If most of a batch of >= 5 campaigns comes back strong/good, something is wrong (a campaign text steering the model, or a
- * model that stopped discriminating). The whole batch is then not recommended: wrongly hiding is cheap, wrongly trusting is not.
+ * Function words that cannot, on their own, be evidence of anything ("with", "the", "that"). There is NO minimum quote length:
+ * a quote qualifies if it is verbatim, sits at word boundaries and contains at least one CONTENT word (so a short legitimate
+ * item like "Python", "SQL" or "CRM" is accepted, while a stop word used as "evidence" is not). The list is English plus a few
+ * Ukrainian/Russian function words; text in other languages is simply not stop-word filtered (grounding still applies).
  */
-const UNIFORM_MIN_BATCH = 5;
-const UNIFORM_SHARE = 0.8;
+const STOPWORDS = new Set((
+  'a an the and or but if of to in on at by for with from as is are was were be been being it its this that these those i me my we our you your he she they them their ' +
+  'do does did have has had not no so than then there here very just also can could will would should may might about into over under up down out off more most ' +
+  'some any all each every many much such own other what which who whom when where why how too yet still ever never ' +
+  'и в на с по для что как я мы он она это не но а или та і й у з до від про що як це але').split(' '));
+
+/** True if the quote has at least one content word: not a stop word and (3+ letters, or a digit, or an all-caps acronym). */
+export function hasContentWord(quote: string): boolean {
+  for (const raw of quote.split(/[^\p{L}\p{N}+#]+/u)) {
+    if (!raw) continue;
+    const t = raw.toLowerCase();
+    if (STOPWORDS.has(t)) continue;
+    if (t.length >= 3 || /\d/.test(t) || (raw.length === 2 && raw === raw.toUpperCase() && /\p{L}/u.test(raw))) return true;
+  }
+  return false;
+}
 
 /** Plain display text from model output: no links, e-mail addresses, phone numbers, bare domains or markdown; bounded. */
 export function safeText(input: unknown, maxChars: number): string {
@@ -52,12 +65,12 @@ function containsAtWordBoundary(hay: string, needle: string): boolean {
   return false;
 }
 
-/** The quote (as written by the tester) if it occurs verbatim, at word boundaries, in the given text; else null. */
-function groundedQuote(q: unknown, corpusNorm: string, minChars: number = MIN_ANALYSIS_QUOTE_CHARS): string | null {
+/** The quote (as written by the tester) if it occurs verbatim, at word boundaries, in the given text and has a content word; else null. */
+export function groundedQuote(q: unknown, corpusNorm: string): string | null {
   if (typeof q !== 'string') return null;
   const clean = cleanText(q, LIMITS.quoteChars * 2).replace(/^["'“”‘’]+|["'“”‘’]+$/g, '').trim();
   const n = normForQuote(clean);
-  if (n.length < minChars || n.length > LIMITS.quoteChars) return null;
+  if (n === '' || n.length > LIMITS.quoteChars || !hasContentWord(clean)) return null;
   return containsAtWordBoundary(corpusNorm, n) ? clean : null;
 }
 
@@ -127,8 +140,10 @@ const NONE: MatchResult = { verdict: 'none', recommended: false, explanation: ''
 /**
  * Policy-checked results keyed by the refs we sent. null = the top-level structure is malformed.
  * Every ref we asked about gets an entry (missing / malformed / ungrounded => 'none', never recommended).
- * `quoteCorpusNorm` = analysisQuoteCorpus(analysis): a match quote must be (>= 12 chars, at word boundaries) text that the
- * validated analysis already quoted from the tester, so campaign text cannot pick its own "evidence".
+ * `quoteCorpusNorm` = analysisQuoteCorpus(analysis): a match quote must be verbatim, at word boundaries and contain a content
+ * word, AND be text that the validated analysis already quoted from the tester, so campaign text cannot pick its own
+ * "evidence". A batch where many campaigns are genuinely relevant is NOT penalised; steering text in a campaign is stopped
+ * earlier by guard.ts (such campaigns are never sent to the model).
  */
 export function parseMatches(raw: unknown, refs: readonly string[], quoteCorpusNorm: string): Map<string, MatchResult> | null {
   if (!isRecord(raw) || !Array.isArray(raw.matches)) return null;
@@ -149,7 +164,7 @@ export function parseMatches(raw: unknown, refs: readonly string[], quoteCorpusN
     if (Array.isArray(m.evidence)) {
       for (const e of m.evidence.slice(0, 5)) {
         if (!isRecord(e)) continue;
-        const quote = groundedQuote(e.quote, quoteCorpusNorm, MIN_MATCH_QUOTE_CHARS);
+        const quote = groundedQuote(e.quote, quoteCorpusNorm);
         const relevance = safeText(e.relevance, LIMITS.relevanceChars);
         if (quote && relevance) evidence.push({ quote, relevance });
         if (evidence.length === 3) break;
@@ -164,11 +179,5 @@ export function parseMatches(raw: unknown, refs: readonly string[], quoteCorpusN
       : { ...NONE, verdict: verdict === 'strong' || verdict === 'good' ? 'none' : verdict, unsupported_requirements: [] });
   }
   for (const r of refs) if (!out.has(r)) out.set(r, NONE);
-
-  // Uniformity guard (see UNIFORM_*): a batch that is almost entirely "recommended" is not trusted.
-  const hits = refs.filter((r) => out.get(r)?.recommended).length;
-  if (refs.length >= UNIFORM_MIN_BATCH && hits / refs.length >= UNIFORM_SHARE) {
-    for (const r of refs) out.set(r, { ...NONE, verdict: 'possible' });
-  }
   return out;
 }

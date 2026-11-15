@@ -14,12 +14,13 @@ export const LIMITS = {
   campaignTaskChars: 600,
   labelChars: 80,
   quoteChars: 200,
-  explanationChars: 320,
+  explanationChars: 280,
   relevanceChars: 200,
   listItems: 12,
   maxRecommendations: 10,
   maxOutputTokensAnalysis: 4000,
   maxOutputTokensMatch: 8000,
+  maxOutputTokensAssess: 3000,
 } as const;
 
 /** Control characters except tab (9) and line feed (10), DEL (127), and the Unicode line/paragraph separators. */

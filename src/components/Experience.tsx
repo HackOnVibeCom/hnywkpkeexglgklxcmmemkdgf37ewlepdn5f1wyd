@@ -183,6 +183,11 @@ export function ConsentCard({ granted, onChanged }: { granted: boolean; onChange
         turn it on, and you can turn it off at any time. Your nickname and account id are never sent, and founders and other testers never see your answers.
         Without it you can still take every test you are eligible for; professional categories simply stay pending.
       </p>
+      <p className="mt-2 text-xs text-slate-500" data-testid="ai-consent-policy">
+        Turning it off stops all AI processing and erases the analysis and recommendations the AI derived about you. A qualification result you already received
+        (it records only “qualified” or “not qualified”, never your answers) stays in place so you keep access to what you earned; to remove it, delete your answers
+        below. If you change an answer while AI processing is off, that professional category waits as pending until you turn it on again.
+      </p>
       <label className="mt-4 flex cursor-pointer items-start gap-3 text-sm font-medium text-slate-900">
         <input
           type="checkbox"

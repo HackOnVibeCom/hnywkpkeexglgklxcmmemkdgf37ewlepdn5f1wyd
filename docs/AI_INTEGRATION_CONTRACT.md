@@ -149,9 +149,12 @@ Authorization: Bearer <supabase access token of the signed-in anonymous user>
 
 ```ts
 type RecommendationsResponse =
-  | { status: 'ok'; generated_at: string; profile_etag: string; items: { campaign_id: string; reason: string; score?: number }[] }
-  | { status: 'unavailable' | 'consent_required' | 'profile_incomplete' };
+  | { status: 'ok'; generated_at: string; profile_etag: string; items: { campaign_id: string; reason: string; score?: number;
+        verdict?: 'strong' | 'good'; evidence?: { quote: string; relevance: string }[]; unsupported_requirements?: string[] }[] }
+  | { status: 'profile_incomplete'; detail?: 'not_participation_ready' | 'too_little_text' }
+  | { status: 'unavailable' | 'consent_required' | 'rate_limited' | 'busy' | 'budget_reached' };
 ```
+(Amended by the AI workstream, see section 11: the optional `verdict` / `evidence` / `unsupported_requirements` and the three extra statuses.)
 
 * `ok` with an empty `items` is a first-class answer: Discover shows "No relevant recommendations right now". Prefer returning nothing to padding the list with weak matches.
 * `reason` is shown to the tester next to the card (≤ 280 chars, plain language, do not quote the tester's answers).
@@ -182,3 +185,13 @@ Fields are only added (optional); removing/renaming one or changing a meaning is
 
 * The assessment decision itself, the OpenAI client, the recommendation endpoint and its hosting, secrets management, spend limits and prompt-injection hardening of free-text answers (treat answers as untrusted data inside prompts).
 * A decision policy for borderline answers. Until you deliver it, professional categories remain pending (§5); nothing here substitutes a temporary approval.
+
+## 11. Amendments made while integrating the AI workstream (`feat/ai-integration`)
+
+All backward compatible (fields only added); `contract_version` stays 1. Implementation notes: `docs/AI_MATCHING.md`.
+
+1. **`RecommendationsResponse`** keeps every field above and adds, all optional: per item `verdict`, `evidence` (verbatim quotes of the tester's OWN text, verified server-side; shown only to that tester), `unsupported_requirements`; top level `understanding`; statuses `rate_limited` (the tester used today's AI allowance), `busy` (a previous request is still running), `budget_reached` (the service-wide daily budget is used up), and `detail` on `profile_incomplete`. `score` is optional and never produced: relevance is evidence-based, there is no numeric score. `reason` is a paraphrase (the verbatim words go in `evidence`).
+2. **Assessment endpoint** (same Edge Function, `{"action":"assess"}`, body is exactly that, no other field): assesses the CALLER's own pending professional categories and records decisions only through `service_record_qualification`. Response `{ status, results[{ category, outcome: 'qualified'|'not_qualified'|'needs_clarification'|'pending', message, clarification_questions[], criteria[] }] }`. `needs_clarification` and `pending` are NOT decisions: the category stays `pending_assessment`.
+3. **What is stored in `p_assessment`**: `model`, `rubric_version` (`r1`), a FIXED sentence as `summary` (never model prose, never answer text), and a numeric `confidence`.
+4. **Consent withdrawal vs. existing decisions (explicit policy, section 10 item 4 made precise):** a recorded decision stays in force after withdrawal (it is a status, not processing); nothing new can be recorded while consent is off; editing an answer while consent is off makes the category `pending_assessment` until consent is on again; re-consent rotates `subject_ref`; deleting the answers deletes the decision. The consent card on the Profile page states this. If the product owner prefers withdrawal to invalidate `ai_assessment` decisions, that is a change to migration 8 (contract version 2 semantics) and must be decided there.
+5. **Erasure implemented** as `public.ai_apply_erasure_events()` (AI migration): reads `service_list_erasure_events` after its own cursor, deletes everything held for each `subject_ref` (all reasons and categories), then advances the cursor in the same transaction; called at the start of every request and optionally by pg_cron. Cached rows are also bound to the current `subject_ref` and keyed by `etag`.

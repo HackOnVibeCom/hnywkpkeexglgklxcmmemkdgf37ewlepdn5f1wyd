@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ConsentCard, DeleteExperience, ExperiencePanel, StatusPill } from '../components/Experience';
+import { AssessmentPanel } from '../components/ai/AssessmentPanel';
 import { CategoryPicker } from '../components/CategoryPicker';
 import { Field } from '../components/form';
 import { Alert, Button, ButtonLink, PageHeader, Spinner } from '../components/ui';
@@ -54,6 +55,7 @@ export function Profile() {
       {data && exp && data.profile && (
         <ExperienceSection exp={exp} open={open} setOpen={setOpen} sectionRef={sectionRef} onChanged={reload} />
       )}
+      {data && exp && <AssessmentPanel exp={exp} onChanged={reload} />}
       {data && exp && <ConsentCard granted={exp.ai_consent.granted} onChanged={reload} />}
       {data && exp && <DeleteExperience hasAnswers={exp.categories.some((c) => c.answers_version !== null)} onDeleted={reload} />}
     </div>
