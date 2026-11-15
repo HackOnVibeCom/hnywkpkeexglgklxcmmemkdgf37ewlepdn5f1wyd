@@ -139,4 +139,52 @@ for (const call of ["select * from public.save_tester_profile('X1','b','{}')", '
 ok(await fails(() => as(newbie, () => q('select * from public.tester_profiles'))) !== null, 'authenticated cannot read tester_profiles directly');
 ok(await fails(() => as(newbie, () => q("select public.normalize_tester_categories('{tech_savvy}')"))) !== null, 'the internal validator is not executable by clients');
 
+console.log('\n[migration 7 (matching v2: open vs targeted + screening) on the same populated database]');
+const M7 = '20261115000200_matching_v2.sql';
+const cSel = 'select id, owner_id, project_id, task_description, status, response_count, created_at, expires_at, target_categories from public.campaigns order by id';
+const campaigns7 = await q(cSel);
+const subs7 = await q('select id, friction, suggestion, ux_rating from public.test_submissions order by id');
+const ledger7 = await q('select id, user_id, delta, reason, campaign_id from public.credit_ledger order by id');
+const reservations7 = await q('select id, campaign_id, tester_id, expires_at, starts from public.test_reservations order by id');
+let err7 = null;
+try { await db.exec(mig(M7)); } catch (e) { err7 = e.message; }
+ok(err7 === null, 'migration 7 applies cleanly on a populated database', err7 ?? '');
+ok(JSON.stringify(campaigns7) === JSON.stringify(await q(cSel)), 'existing campaigns are unchanged (incl. their v1 preferred categories)');
+ok((await q("select count(*)::int n from public.campaigns where testing_mode = 'open'"))[0].n === campaigns7.length, 'EVERY existing campaign is OPEN testing (none is silently restricted)');
+const v1pref = await q('select testing_mode, target_categories from public.campaigns where id = $1', [tgt]);
+ok(v1pref[0].testing_mode === 'open' && JSON.stringify(v1pref[0].target_categories) === '["tech_savvy"]', 'the Matching-v1 campaign with preferred categories stays OPEN and keeps its preferred category');
+ok(JSON.stringify(subs7) === JSON.stringify(await q('select id, friction, suggestion, ux_rating from public.test_submissions order by id')), 'feedback is byte-identical');
+ok(JSON.stringify(ledger7) === JSON.stringify(await q('select id, user_id, delta, reason, campaign_id from public.credit_ledger order by id')), 'ledger rows are unchanged');
+ok(JSON.stringify(reservations7) === JSON.stringify(await q('select id, campaign_id, tester_id, expires_at, starts from public.test_reservations order by id')), 'reservations are unchanged');
+const flags7 = await q("select relname, relrowsecurity from pg_class where relnamespace = 'public'::regnamespace and relname in ('screening_versions','screening_questions','screening_attempts')");
+ok(flags7.length === 3 && flags7.every((r) => r.relrowsecurity), 'the three screening tables exist with RLS enabled (auto-RLS + explicit)');
+ok((await q('select count(*)::int n from public.screening_versions'))[0].n === 3 && (await q('select count(*)::int n from public.screening_questions'))[0].n === 12, 'screening content seeded: 3 categories x 4 questions');
+ok((await q('select count(*)::int n from public.screening_attempts'))[0].n === 0, 'no attempts yet');
+const nb = uid(20);
+const nb2 = uid(21);
+for (const u of [nb, nb2]) { await db.query('insert into auth.users (id) values ($1)', [u]); await as(u, () => q('select * from public.ensure_profile()')); }
+ok(!!(await as(nb, () => q('select public.start_test($1) r', [tgt])))[0].r.reservation_expires_at, 'a tester with NO profile and NO screening can still start the pre-existing v1 campaign');
+ok((await as(nb2, () => q('select * from public.list_open_campaigns()'))).length >= 1 && (await as(nb2, () => q('select * from public.list_matched_campaigns()'))).length >= 1, 'the v0 and v1 feed RPCs still work (the deployed UI keeps working)');
+ok(!!(await as(nb2, () => q('select public.create_targeted_campaign($1,$2,$3,$4,$5) id', ['Post-M7 v1 style', 'https://example.net', 'd', TASK, ['students_learners']])))[0].id, 'the v1 create RPC still works and creates an OPEN campaign');
+const nb3 = uid(22);
+await db.query('insert into auth.users (id) values ($1)', [nb3]);
+await as(nb3, () => q('select * from public.ensure_profile()'));
+ok((await as(nb3, () => q("select * from public.save_tester_profile('Zed','b','{tech_savvy}')"))).length === 1, 'profile save still works');
+const scr = (await as(nb3, () => q("select public.get_screening('tech_savvy') r")))[0].r;
+ok(scr.questions.length === 4 && scr.attempts_left === 3, 'get_screening works with NO default grants (explicit EXECUTE)');
+const pr = (await as(nb3, () => q("select public.submit_screening('tech_savvy', $1::jsonb) r", [JSON.stringify({ q1: ['code', 'terminal'], q2: ['git'], q3: ['none'], q4: ['none'] })])))[0].r;
+ok(pr.passed === true, 'submit_screening works with NO default grants');
+ok((await as(nb3, () => q('select public.get_my_screening_status() r')))[0].r.find((x) => x.category === 'tech_savvy').qualified === true, 'get_my_screening_status works');
+const tgt2 = (await as(nb3, () => q("select public.create_campaign_v2('Post-M7 targeted','https://example.net','d',$1,'targeted','{business_office}') id", [TASK])))[0].id;
+ok((await q('select testing_mode from public.campaigns where id = $1', [tgt2]))[0].testing_mode === 'targeted', 'create_campaign_v2 creates a TARGETED campaign');
+ok((await as(nb, () => q('select public.get_campaign_eligibility($1) r', [tgt2])))[0].r.reason === 'no_profile', 'get_campaign_eligibility works');
+ok((await as(nb2, () => q('select * from public.list_campaigns_v2()'))).some((r) => r.campaign_id === tgt2 && r.fit === 'not_eligible'), 'list_campaigns_v2 works and flags the targeted campaign as not eligible');
+ok(await fails(() => as(nb2, () => q('select public.start_test($1)', [tgt2]))) !== null, 'the server refuses a non-eligible reservation on the new targeted campaign');
+for (const call of ["select public.get_screening('tech_savvy')", 'select * from public.list_campaigns_v2()', 'select public.get_my_screening_status()', 'select * from public.screening_attempts', 'select * from public.screening_questions']) {
+  ok(await fails(() => as(null, () => q(call))) !== null, 'anon denied: ' + call.slice(0, 48));
+}
+for (const call of ['select * from public.screening_attempts', 'select * from public.screening_questions', 'select * from public.screening_versions', "select public.is_screened('00000000-0000-0000-0000-000000000001','tech_savvy')", "select * from public.tester_eligibility('00000000-0000-0000-0000-000000000001','open','{}')"]) {
+  ok(await fails(() => as(nb3, () => q(call))) !== null, 'authenticated denied: ' + call.slice(0, 52));
+}
+
 summary();
