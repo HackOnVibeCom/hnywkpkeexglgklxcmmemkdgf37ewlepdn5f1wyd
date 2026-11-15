@@ -1,3 +1,6 @@
+export type { TestingMode } from './matching';
+import type { TestingMode } from './matching';
+
 export interface Profile {
   id: string;
   credit_balance: number;
@@ -33,10 +36,81 @@ export interface OpenCampaign {
  * One row of the matched Discover feed (list_matched_campaigns): an OpenCampaign plus who the founder wanted.
  * match_categories = the founder's target categories that overlap MY categories (empty = not recommended).
  */
+export type Fit = 'recommended' | 'eligible' | 'not_eligible';
+
 export interface MatchedCampaign extends OpenCampaign {
+  /** Open testing: PREFERRED categories (a recommendation hint). Targeted testing: REQUIRED categories. */
   target_categories: string[];
   match_categories: string[];
   is_recommended: boolean;
+  /** Matching v2. Before migration 7 every campaign is treated as 'open' and eligible. */
+  testing_mode: TestingMode;
+  fit: Fit;
+  eligible: boolean;
+  ineligible_reason: string | null;
+  missing_screening: string[];
+}
+
+/** get_campaign_eligibility: can I start this task, and if not, why (enforced server-side). */
+export interface CampaignEligibility {
+  campaign_id: string;
+  testing_mode: TestingMode;
+  required_categories: string[];
+  eligible: boolean;
+  /** open | eligible | in_progress | no_profile | category_mismatch | screening_required */
+  reason: string;
+  missing_screening: string[];
+  overlap: string[];
+  own_campaign: boolean;
+}
+
+/**
+ * Experience profile (migration 8). Four open-ended answers per category; states are computed by the database:
+ *   inactive            not in my profile
+ *   incomplete          in my profile, the four answers for the CURRENT question version are missing / outdated
+ *   active              general category: answers complete; professional: answers complete AND a valid qualification decision
+ *   pending_assessment  professional, answers complete, waiting for the assessment (needs AI consent)
+ *   not_qualified       professional, a decision of "not qualified" for exactly these answers (editing them reopens it)
+ */
+export type ExperienceState = 'inactive' | 'incomplete' | 'active' | 'pending_assessment' | 'not_qualified';
+
+export interface ExperienceCategory {
+  category: string;
+  /** true for the three professional categories */
+  requires_assessment: boolean;
+  selected: boolean;
+  state: ExperienceState;
+  /** not_selected | answers_needed | questions_changed | consent_required | awaiting_assessment | not_qualified | active */
+  reason: string;
+  question_version: number;
+  answers_version: number | null;
+  answers_complete: boolean;
+  answers_updated_at: string | null;
+  /** the VALID decision, if any (never present for general categories) */
+  qualification: { status: 'qualified' | 'not_qualified'; source: 'ai_assessment'; decided_at: string } | null;
+}
+
+export interface MyExperience {
+  has_profile: boolean;
+  /** at least one selected category has its four answers: required to reserve ANY task */
+  participation_ready: boolean;
+  ai_consent: { granted: boolean; policy_version: number; updated_at: string | null };
+  categories: ExperienceCategory[];
+  active_categories: string[];
+}
+
+export interface ExperienceQuestions {
+  category: string;
+  version: number;
+  requires_assessment: boolean;
+  questions: { id: string; prompt: string; hint: string | null }[];
+  /** MY stored answers (owner only), or null */
+  answers: Record<string, string> | null;
+  answers_version: number | null;
+  /** my answers belong to an older question version: please review and save again */
+  outdated: boolean;
+  updated_at: string | null;
+  saves_left: number;
 }
 
 /** My OPTIONAL tester profile. Private: no other identity can read it. */
@@ -57,6 +131,8 @@ export interface SaveTesterProfileInput {
 export interface DiscoverFeed {
   campaigns: MatchedCampaign[];
   matching: boolean;
+  /** true when the backend supports Open vs Targeted testing (migration 7). */
+  modes: boolean;
 }
 
 /** get_campaign_for_test. project_url is only present while the caller holds a live reservation. */
@@ -133,6 +209,8 @@ export interface MyCampaign {
   closed_at: string | null;
   /** Preferred tester categories (absent / empty = anyone; also absent before migration 6 is applied). */
   target_categories?: string[];
+  /** Matching v2 (absent before migration 7 = open). */
+  testing_mode?: TestingMode;
   project: { name: string; url: string; description: string | null } | null;
   submissions: Submission[];
   /** A tester currently holds a live reservation (so Cancel is refused). Derived from RLS-visible rows. */
@@ -167,6 +245,10 @@ export interface CreateCampaignInput {
   url: string;
   description: string;
   task: string;
-  /** Optional preferred tester categories (category ids). Empty = anyone. */
+  /**
+   * 'open' (default): categories are optional PREFERENCES (recommendation only).
+   * 'targeted': categories are REQUIRED; only eligible testers can start the task.
+   */
+  mode?: TestingMode;
   targetCategories?: string[];
 }

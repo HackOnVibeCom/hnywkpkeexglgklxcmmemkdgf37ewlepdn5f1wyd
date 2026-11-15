@@ -64,6 +64,99 @@ for (const bio of ['I am a 70 year old retired grandmother', 'devout Muslim and 
 ok(suggestCategories('Retired teacher').length === 0, '"retired" alone suggests nothing (no age inference)');
 ok(Array.isArray(suggestCategories('x').map((s) => s.matched)), 'suggestions expose only category + the words found (no scores about people)');
 ok(CATEGORIES.every((c) => c.keywords.length >= 8 && new Set(c.keywords).size === c.keywords.length), 'keyword lists are non-trivial and duplicate-free');
+console.log('\n[professional vs general categories]');
+{
+  const { PROFESSIONAL_CATEGORY_IDS, isProfessional, ASSESSMENT_NOTE } = await import('../../src/lib/matching.ts');
+  ok(JSON.stringify(PROFESSIONAL_CATEGORY_IDS) === '["tech_savvy","founders_builders","business_office"]', 'exactly the three professional categories are assessed');
+  ok(['students_learners', 'everyday_nontechnical'].every((c) => !isProfessional(c)) && PROFESSIONAL_CATEGORY_IDS.every(isProfessional), 'the two general categories are never "professional"');
+  ok(!isProfessional('wizards') && !isProfessional('') && !isProfessional('__proto__'), 'unknown ids are not professional');
+  ok(/does not verify/i.test(ASSESSMENT_NOTE) && /self|own written/i.test(ASSESSMENT_NOTE), 'the assessment note says nothing is verified');
+}
 
-console.log(`\n${pass} passed, ${fail} failed`);
+console.log('\n[answer validation mirrors the server]');
+{
+  const { validateAnswer, validateAnswers, ANSWER_MIN, ANSWER_MAX } = await import('../../src/lib/matching.ts');
+  ok(ANSWER_MIN === 15 && ANSWER_MAX === 800, 'limits are 15..800 characters');
+  ok(validateAnswer('') !== null && validateAnswer('   ') !== null && validateAnswer('a b c d e f g') !== null, 'empty, blank and 13-character answers are rejected');
+  ok(validateAnswer('one two three x') === null, 'exactly 15 characters with enough words is accepted');
+  ok(validateAnswer('x'.repeat(60)) !== null && validateAnswer('Python programming') !== null, 'a single long word / two words are rejected');
+  ok(validateAnswer('yes yes yes yes yes yes yes') !== null, 'three or more words but fewer than three DIFFERENT words are rejected');
+  ok(validateAnswer(('word ').repeat(160) + 'z') !== null, 'over 800 characters is rejected');
+  ok(validateAnswer('Привет я изучаю программирование и дизайн') === null, 'non-ASCII text is accepted');
+  ok(validateAnswer('valid looking text \u0007 with a bell char') !== null, 'control characters are rejected');
+  ok(validateAnswer('  lots   of\n\nspaces and   line breaks here ') === null, 'whitespace is normalised before measuring');
+  const ids = ['q1', 'q2', 'q3', 'q4'];
+  const good = { q1: 'I use these tools every day', q2: 'A project where I built things', q3: 'Something broke so I read logs', q4: 'Products I enjoy testing a lot' };
+  ok(validateAnswers(ids, good).ok === true, 'four good answers are ok');
+  ok(validateAnswers(ids, { ...good, q3: '' }).errors.q3 && !validateAnswers(ids, { ...good, q3: '' }).ok, 'a missing answer is reported on its own question');
+  const dup = validateAnswers(ids, { q1: 'the same words here', q2: 'The Same Words Here', q3: good.q3, q4: good.q4 });
+  ok(dup.duplicate === true && dup.ok === false, 'duplicate answers are flagged');
+  ok(Object.keys(validateAnswers(ids, {}).errors).length === 4, 'no answers: all four are reported');
+}
+
+console.log('\n[status wording: never "verified"]');
+{
+  const { experienceBadge } = await import('../../src/lib/matching.ts');
+  const mk = (state, reason, extra = {}) => ({ state, reason, requires_assessment: true, qualification: null, ...extra });
+  ok(experienceBadge(mk('inactive', 'not_selected')) === null, 'not selected: no badge');
+  ok(experienceBadge(mk('incomplete', 'answers_needed')).kind === 'incomplete' && /four answers needed/.test(experienceBadge(mk('incomplete', 'answers_needed')).text), 'incomplete: asks for four answers');
+  ok(/questions were updated/.test(experienceBadge(mk('incomplete', 'questions_changed')).text), 'outdated answers: says the questions were updated');
+  ok(experienceBadge(mk('pending_assessment', 'consent_required')).kind === 'pending' && /permission/.test(experienceBadge(mk('pending_assessment', 'consent_required')).text), 'professional with answers but no consent: pending, needs permission');
+  ok(/answers received/.test(experienceBadge(mk('pending_assessment', 'awaiting_assessment')).text), 'with consent: pending assessment');
+  ok(experienceBadge(mk('not_qualified', 'not_qualified')).kind === 'warn', 'not_qualified is a warning with a way forward');
+  ok(experienceBadge({ state: 'active', reason: 'active', requires_assessment: false, qualification: null }).text === 'Active', 'a general category is simply Active');
+  ok(/qualified by assessment/.test(experienceBadge(mk('active', 'active', { qualification: { status: 'qualified', source: 'ai_assessment' } })).text), 'professional: "qualified by assessment"');
+  ok(!/earlier screening/i.test(experienceBadge(mk('active', 'active', { qualification: { status: 'qualified', source: 'ai_assessment' } })).text), 'there is no "earlier screening" status any more: only an assessment activates a professional category');
+  const all = ['inactive', 'incomplete', 'pending_assessment', 'not_qualified', 'active'].flatMap((s) => ['answers_needed', 'consent_required', 'active'].map((r) => experienceBadge(mk(s, r))?.text ?? '')).join(' ');
+  ok(!/\b(verified|certified|accredited|validated)\b/i.test(all), 'no badge text claims verification');
+}
+
+console.log('\n[explanations of why a task cannot be started]');
+{
+  const { explainIneligible, shortReason } = await import('../../src/lib/matching.ts');
+  const pi = explainIneligible('profile_incomplete', []);
+  ok(pi.action === 'profile' && /four short questions|four/.test(pi.body) && /still request tests/.test(pi.body), 'profile_incomplete: asks to complete the profile and says requesting tests still works');
+  ok(explainIneligible('no_profile', []).action === 'profile', 'the legacy no_profile code is explained the same way');
+  const mm = explainIneligible('category_mismatch', ['business_office']);
+  ok(mm.action === 'profile' && /Business & Office Users/.test(mm.body) && /does not include/.test(mm.body), 'category_mismatch: says the profile lacks the categories');
+  const qr = explainIneligible('qualification_required', ['tech_savvy', 'students_learners'], ['tech_savvy']);
+  ok(qr.action === 'answers' && qr.answersCategory === 'tech_savvy' && /not a verified credential/.test(qr.body) && /does not qualify you/.test(qr.body), 'qualification_required: points at the category to complete and says it is self-reported');
+  ok(explainIneligible('screening_required', ['founders_builders'], ['founders_builders']).answersCategory === 'founders_builders', 'the legacy screening_required code maps to the same explanation');
+  ok(explainIneligible('weird', []).action === null && explainIneligible(null, []).action === null, 'an unknown reason gives a safe generic message');
+  ok(['profile_incomplete', 'no_profile', 'category_mismatch', 'qualification_required', 'screening_required', null].every((r) => typeof shortReason(r) === 'string' && shortReason(r).length > 3), 'short reasons exist for every code');
+  const all = [pi, mm, qr].map((e) => e.title + ' ' + e.body).join(' ');
+  ok(!/\b(AI|artificial|machine learning)\b/i.test(all), 'no AI claims in any explanation');
+}
+
+console.log('\n[AI contract types are importable and the recommendation seam is honest]');
+{
+  const c = await import('../../src/lib/aiContract.ts');
+  ok(c.AI_CONTRACT_VERSION === 1, 'contract version 1');
+  const r = await import('../../src/lib/recommendations.ts');
+  const out = await r.fetchRecommendations();
+  ok(out.status === 'unavailable' && !('items' in out), 'until the AI service exists the provider says "unavailable" and invents nothing');
+}
+
+console.log('\n[recommendations: only actionable, eligible campaigns are ever shown]');
+{
+  const { actionableRecommendations } = await import('../../src/lib/recommendations.ts');
+  const eligible = new Set(['c1', 'c2', 'c3']);
+  const items = [
+    { campaign_id: 'c2', reason: 'You described invoicing tools', score: 0.9 },
+    { campaign_id: 'x9', reason: 'a targeted task the tester cannot reserve' },
+    { campaign_id: 'c2', reason: 'duplicate' },
+    { campaign_id: 'c1', reason: 'fits your project work' },
+  ];
+  const out = actionableRecommendations({ status: 'ok', generated_at: 'now', profile_etag: 'e', items }, eligible);
+  ok(JSON.stringify(out.map((r) => r.campaign_id)) === '["c2","c1"]', 'ineligible / unknown campaigns are dropped, duplicates collapse, the service order is kept');
+  ok(out[0].score === 0.9 && out[1].score === undefined, 'optional score passes through');
+  ok(actionableRecommendations({ status: 'ok', generated_at: 'now', profile_etag: 'e', items: [] }, eligible).length === 0, 'an ok response with no items is an empty list (honest empty state)');
+  ok(actionableRecommendations({ status: 'ok', generated_at: 'now', profile_etag: 'e', items: [{ campaign_id: 'x9', reason: 'r' }] }, eligible).length === 0, 'a response that only names ineligible campaigns becomes empty');
+  ok(['unavailable', 'consent_required', 'profile_incomplete'].every((s) => actionableRecommendations({ status: s }, eligible).length === 0), 'non-ok statuses never yield items');
+  ok(actionableRecommendations({ status: 'ok', generated_at: 'now', profile_etag: 'e', items: 'not-an-array' }, eligible).length === 0 && actionableRecommendations({ status: 'ok', generated_at: 'now', profile_etag: 'e', items: [null, 5, {}] }, eligible).length === 0, 'malformed responses cannot crash the page or inject items');
+  ok(actionableRecommendations({ status: 'ok', generated_at: 'now', profile_etag: 'e', items: [{ campaign_id: 'c1', reason: 'x'.repeat(1000) }] }, eligible)[0].reason.length === 280, 'an over-long reason is truncated');
+}
+
+console.log(`
+${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

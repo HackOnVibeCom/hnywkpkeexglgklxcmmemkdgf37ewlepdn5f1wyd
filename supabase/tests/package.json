@@ -4,7 +4,7 @@
   "type": "module",
   "description": "Runs the Supabase migrations against real Postgres (PGlite/WASM) with a stubbed auth schema. Separate from the app so it never affects the Cloudflare build.",
   "scripts": {
-    "test": "node run.mjs && node lifecycle.mjs && node referrals.mjs && node upgrade.mjs && node matching.mjs"
+    "test": "node run.mjs && node lifecycle.mjs && node referrals.mjs && node upgrade.mjs && node matching.mjs && node matching_v2.mjs && node experience.mjs"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.3.0"

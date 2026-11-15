@@ -1,6 +1,6 @@
 // Phase 2 UI: referral capture/claim, share prompts, results ("proof") card, Cloudflare Turnstile — real Chrome,
 // stubbed API. Verifies what the visitor sees and what the client sends; SQL rules live in supabase/tests.
-import { CAMP_ID, createBackend, dashCampaign, iso } from './stub.mjs';
+import { CAMP_ID, createReadyBackend as createBackend, dashCampaign, iso } from './stub.mjs';
 import { SHOTS, launch, newPage, overflowX, reporter, waitUntil } from './lib.mjs';
 
 const ENV = process.env.BASE_ENV;

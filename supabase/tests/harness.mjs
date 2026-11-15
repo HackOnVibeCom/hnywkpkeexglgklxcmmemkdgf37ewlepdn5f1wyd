@@ -27,7 +27,15 @@ const migDir = process.env.MIGRATIONS_DIR ?? join(here, '..', 'migrations');
  * @param autoRls          true = model "automatic RLS": an event trigger enables RLS on every table
  *                         created in public.
  */
-export async function createHarness({ migrations = null, quiet = false, exposureDisabled = false, autoRls = false } = {}) {
+/**
+ * upTo:      apply only migrations up to (and including) this file name. Suites that pin the behaviour of migrations that are
+ *            ALREADY LIVE in production (6, 7) use it, so they keep testing exactly what runs there.
+ * autoReady: TEST FIXTURE ONLY (never part of a migration): every new identity automatically gets a completed tester profile
+ *            (Students & Learners + four valid answers), because since migration 8 a tester needs one to reserve ANY task.
+ *            The credit / lifecycle / referral regression suites use it so they keep exercising their own subject; the
+ *            participation rule itself is tested without the fixture (experience.mjs, upgrade.mjs).
+ */
+export async function createHarness({ migrations = null, quiet = false, exposureDisabled = false, autoRls = false, upTo = null, autoReady = false } = {}) {
   const db = new PGlite();
 
   await db.exec(`
@@ -40,7 +48,7 @@ export async function createHarness({ migrations = null, quiet = false, exposure
       as $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
     grant usage on schema auth to anon, authenticated;
     grant execute on function auth.uid() to anon, authenticated;
-    grant usage on schema public to anon, authenticated;
+    grant usage on schema public to anon, authenticated, service_role;
   `);
   if (!exposureDisabled) {
     // Mimic Supabase's old default privileges (broad grants that our migrations must revoke).
@@ -63,8 +71,23 @@ export async function createHarness({ migrations = null, quiet = false, exposure
   const files = readdirSync(migDir).filter((n) => n.endsWith('.sql')).sort();
   for (const f of files) {
     if (migrations && !migrations.includes(f)) continue;
+    if (upTo && f > upTo) continue;
     await db.exec(readFileSync(join(migDir, f), 'utf8'));
     if (!quiet) console.log(`applied ${f}`);
+  }
+
+  if (autoReady) {
+    await db.exec(`
+      create function public.test_fixture_ready() returns trigger language plpgsql security definer set search_path = '' as $f$
+      declare a jsonb := '{"q1":"fixture answer number one","q2":"fixture answer number two","q3":"fixture answer number three","q4":"fixture answer number four"}'::jsonb;
+      begin
+        insert into public.tester_profiles (user_id, nickname, categories) values (new.id, 'Fixture', '{students_learners}');
+        insert into public.experience_answers (user_id, category, version, answers, answers_hash)
+        values (new.id, 'students_learners', 1, a, public.experience_hash(1, a));
+        return new;
+      end $f$;
+      create trigger test_fixture_ready after insert on public.profiles for each row execute function public.test_fixture_ready();
+    `);
   }
 
   let passed = 0;
