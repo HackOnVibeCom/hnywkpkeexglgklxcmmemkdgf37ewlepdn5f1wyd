@@ -9,6 +9,7 @@ import { Discover } from './pages/Discover';
 import { CreateTask } from './pages/CreateTask';
 import { TestTask } from './pages/TestTask';
 import { Dashboard } from './pages/Dashboard';
+import { Profile } from './pages/Profile';
 
 function ScrollToTop() {
   const { pathname } = useLocation();
@@ -38,6 +39,7 @@ export default function App() {
             <Route path="create" element={<SessionGate><CreateTask /></SessionGate>} />
             <Route path="test/:campaignId" element={<SessionGate><TestTask /></SessionGate>} />
             <Route path="dashboard" element={<SessionGate><Dashboard /></SessionGate>} />
+            <Route path="profile" element={<SessionGate><Profile /></SessionGate>} />
             <Route path="*" element={<NotFound />} />
           </Route>
         </Routes>

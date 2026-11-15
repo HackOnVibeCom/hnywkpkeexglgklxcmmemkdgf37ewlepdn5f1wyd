@@ -6,16 +6,20 @@ import type {
   CancelResult,
   CreateCampaignInput,
   DashboardData,
+  DiscoverFeed,
   LedgerEntry,
+  MatchedCampaign,
   MyCampaign,
   MyReferrals,
   MyStatus,
   OpenCampaign,
   Profile,
+  SaveTesterProfileInput,
   StartTestResult,
   SubmitTestInput,
   SubmitTestResult,
   Submission,
+  TesterProfile,
 } from './types';
 
 /** Error carrying the machine-readable code raised by our SQL RPCs (e.g. "insufficient_credits"). */
@@ -42,6 +46,10 @@ const FRIENDLY: Record<string, string> = {
   invalid_rating: 'Choose a rating from 1 to 5.',
   insufficient_credits: 'You need 1 credit to request a test. Test someone else’s product to earn one.',
   campaign_not_found: 'This task no longer exists.',
+  invalid_nickname: 'Nickname must be 2–30 characters, without control characters.',
+  invalid_bio: 'The short bio must be 280 characters or fewer, without control characters.',
+  matching_unavailable: 'Targeted Tester Matching is not available on this server yet. Everything else works as before.',
+  invalid_categories: 'One of the selected categories is not valid. Reload the page and choose from the list.',
   campaign_closed: 'This task is no longer open (it was completed, cancelled or expired). No credit was spent or earned — pick another task.',
   own_campaign: 'You cannot test your own project.',
   already_tested: 'Your feedback for this task was already recorded and your credit was awarded — nothing more to do here.',
@@ -113,6 +121,54 @@ export async function fetchProfile(): Promise<Profile> {
 
 export const listOpenCampaigns = () => rpc<OpenCampaign[]>('list_open_campaigns');
 
+/** True when the backend simply does not have the function yet (migration not applied): PostgREST says so in the message. */
+const isMissingFunction = (e: unknown) => e instanceof Error && /could not find the function|PGRST202|schema cache/i.test(e.message);
+
+/**
+ * Discover feed with Targeted Tester Matching. If the matching function does not exist yet (the UI was deployed
+ * before the database migration), it degrades to the plain feed instead of breaking Discover.
+ */
+export async function listDiscoverCampaigns(): Promise<DiscoverFeed> {
+  try {
+    return { campaigns: await rpc<MatchedCampaign[]>('list_matched_campaigns'), matching: true };
+  } catch (e) {
+    if (!isMissingFunction(e)) throw e;
+    const plain = await listOpenCampaigns();
+    return {
+      campaigns: plain.map((c) => ({ ...c, target_categories: [], match_categories: [], is_recommended: false })),
+      matching: false,
+    };
+  }
+}
+
+/** My optional tester profile, or null when I have not created one (or the backend predates matching). */
+export async function getMyTesterProfile(): Promise<TesterProfile | null> {
+  try {
+    const rows = await rpc<TesterProfile[]>('get_my_tester_profile');
+    return rows[0] ?? null;
+  } catch (e) {
+    if (isMissingFunction(e)) return null;
+    throw e;
+  }
+}
+
+/** Runs an RPC that only exists after migration 6; a missing function becomes one friendly, accurate message. */
+async function matchingRpc<T>(fn: string, args?: Record<string, unknown>): Promise<T> {
+  try {
+    return await rpc<T>(fn, args);
+  } catch (e) {
+    if (isMissingFunction(e)) throw new ApiError('matching_unavailable', 'matching_unavailable');
+    throw e;
+  }
+}
+
+export async function saveTesterProfile(i: SaveTesterProfileInput): Promise<TesterProfile> {
+  const rows = await matchingRpc<TesterProfile[]>('save_tester_profile', { p_nickname: i.nickname, p_bio: i.bio, p_categories: i.categories });
+  return rows[0];
+}
+
+export const deleteTesterProfile = () => matchingRpc<boolean>('delete_my_tester_profile');
+
 export const getMyStatus = () => rpc<MyStatus>('get_my_status');
 
 export const startTest = (campaignId: string) => rpc<StartTestResult>('start_test', { p_campaign_id: campaignId });
@@ -148,13 +204,25 @@ export async function getCampaignForTest(campaignId: string): Promise<CampaignFo
   return rows[0] ?? null;
 }
 
+/**
+ * Without target categories this is EXACTLY the original call (so nothing changes for anyone who does not use
+ * targeting). With categories it uses create_targeted_campaign: validated first, then the same credit logic.
+ */
 export const createCampaign = (i: CreateCampaignInput) =>
-  rpc<string>('create_project_with_campaign', {
-    p_name: i.name,
-    p_url: i.url,
-    p_description: i.description,
-    p_task: i.task,
-  });
+  i.targetCategories && i.targetCategories.length > 0
+    ? matchingRpc<string>('create_targeted_campaign', {
+        p_name: i.name,
+        p_url: i.url,
+        p_description: i.description,
+        p_task: i.task,
+        p_target_categories: i.targetCategories,
+      })
+    : rpc<string>('create_project_with_campaign', {
+        p_name: i.name,
+        p_url: i.url,
+        p_description: i.description,
+        p_task: i.task,
+      });
 
 export const submitTest = (i: SubmitTestInput) =>
   rpc<SubmitTestResult>('submit_test', {
@@ -175,6 +243,17 @@ export async function settleAll(): Promise<number> {
 export async function fetchDashboard(): Promise<DashboardData> {
   const sb = getSupabase();
 
+  const CAMPAIGN_COLS =
+    'id,task_description,status,max_responses,response_count,created_at,expires_at,completed_at,closed_at,project:projects(name,url,description)';
+  const fetchCampaigns = async () => {
+    const res = await sb.from('campaigns').select(`${CAMPAIGN_COLS},target_categories`).order('created_at', { ascending: false });
+    // Backend without migration 6: the column does not exist (Postgres 42703). Retry without it.
+    if (res.error && (res.error.code === '42703' || /target_categories/.test(res.error.message))) {
+      return sb.from('campaigns').select(CAMPAIGN_COLS).order('created_at', { ascending: false });
+    }
+    return res;
+  };
+
   const [ledgerRes, rewardCountRes, campaignsRes, reservationsRes] = await Promise.all([
     sb
       .from('credit_ledger')
@@ -182,12 +261,7 @@ export async function fetchDashboard(): Promise<DashboardData> {
       .order('created_at', { ascending: false })
       .limit(30),
     sb.from('credit_ledger').select('id', { count: 'exact', head: true }).eq('reason', 'test_reward'),
-    sb
-      .from('campaigns')
-      .select(
-        'id,task_description,status,max_responses,response_count,created_at,expires_at,completed_at,closed_at,project:projects(name,url,description)',
-      )
-      .order('created_at', { ascending: false }),
+    fetchCampaigns(),
     // Founders may see THAT a test is in progress (never who): tester_id is not granted.
     sb.from('test_reservations').select('campaign_id,expires_at,consumed_at').is('consumed_at', null),
   ]);

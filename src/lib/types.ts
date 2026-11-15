@@ -29,6 +29,36 @@ export interface OpenCampaign {
   reservation_expires_at: string | null;
 }
 
+/**
+ * One row of the matched Discover feed (list_matched_campaigns): an OpenCampaign plus who the founder wanted.
+ * match_categories = the founder's target categories that overlap MY categories (empty = not recommended).
+ */
+export interface MatchedCampaign extends OpenCampaign {
+  target_categories: string[];
+  match_categories: string[];
+  is_recommended: boolean;
+}
+
+/** My OPTIONAL tester profile. Private: no other identity can read it. */
+export interface TesterProfile {
+  nickname: string;
+  bio: string | null;
+  categories: string[];
+  updated_at: string;
+}
+
+export interface SaveTesterProfileInput {
+  nickname: string;
+  bio: string;
+  categories: string[];
+}
+
+/** The Discover feed plus whether Targeted Tester Matching was available (false = old backend, plain feed). */
+export interface DiscoverFeed {
+  campaigns: MatchedCampaign[];
+  matching: boolean;
+}
+
 /** get_campaign_for_test. project_url is only present while the caller holds a live reservation. */
 export interface CampaignForTest {
   campaign_id: string;
@@ -101,6 +131,8 @@ export interface MyCampaign {
   expires_at: string;
   completed_at: string | null;
   closed_at: string | null;
+  /** Preferred tester categories (absent / empty = anyone; also absent before migration 6 is applied). */
+  target_categories?: string[];
   project: { name: string; url: string; description: string | null } | null;
   submissions: Submission[];
   /** A tester currently holds a live reservation (so Cancel is refused). Derived from RLS-visible rows. */
@@ -135,4 +167,6 @@ export interface CreateCampaignInput {
   url: string;
   description: string;
   task: string;
+  /** Optional preferred tester categories (category ids). Empty = anyone. */
+  targetCategories?: string[];
 }
