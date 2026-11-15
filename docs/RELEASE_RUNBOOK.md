@@ -112,3 +112,22 @@ GO for steps 2-4 (UI + migrations) when: the dry-run lists exactly three migrati
 * The project uses the new API keys / JWT signing keys (the secrets list shows `SUPABASE_JWKS`, `SUPABASE_PUBLISHABLE_KEYS`). Verified on the hosted gateway: a REAL anonymous user token passes `verify_jwt = true` and the function; garbage / tampered tokens get 401 from the gateway; the anon key (not a user) gets 401 from the function. No `--no-verify-jwt` fallback is needed.
 * pg_cron is available (1.6.4) but not installed: `docs/enable-erasure-cron.sql` (one human action: enable the extension in Dashboard -> Database -> Extensions, or run its first statement as owner).
 * A live Production referral check needs a normal Chrome started by the human with `--remote-debugging-port` (Playwright's own Chrome is refused by Turnstile): `tests/browser/prod-referral-live.mjs`. Proof of the trigger: the referrer's `referral_reward` ledger row has the SAME `created_at` as the invitee's `test_reward` row (same transaction).
+
+## 12. AI activation: production evidence and the FINAL frontend switch (2026-11-15)
+**Done in Production (backend only; the browser UI still makes no AI call because `VITE_AI_MATCHING` is unset):** `OPENAI_API_KEY` (separate `uxbarter-prod` project), `AI_ASSESSMENT_ENABLED=true`, `AI_MATCHING_ENABLED=true`, pg_cron job `ai-erasure-sweep` (every minute).
+* Assessment (`tests/browser/prod-ai-assess-live.mjs`): 1 call, 1,187 in / 212 out tokens, tech_savvy -> `qualified`; consent withdrawal -> `pending_assessment`, decision removed.
+* Recommendation (`tests/browser/prod-ai-recommend-live.mjs`): ONE hosted request = 2 model calls (analysis + ranking), 1,984 in / 602 out tokens (about $0.0005), HTTP 200; the relevant open campaign was recommended (`good`), the unrelated one was not; non-consenting identities get `consent_required` without any model call; after withdrawal the cron sweep erased the analysis + both cached results (about a minute).
+* Matching uses the answers of ACTIVE categories only: an unassessed professional category contributes nothing (the bio alone was used in the test). Assessment -> qualified -> richer recommendations is the intended flow; the two halves were each tested live, the combination only offline.
+* Cost control: per-user 12 calls/day, 15 s throttle, global 1,500 calls and 5M tokens/day (about $0.0005 per recommendation run), plus the hard budget of the OpenAI project.
+
+**FINAL ACTIVATION (needs the owner's explicit approval; a frontend rebuild is required because Vite inlines `VITE_*` at build time):**
+```
+cd "<the linked project folder containing .vercel/project.json>"
+printf '1' | MSYS_NO_PATHCONV=1 npx vercel env add VITE_AI_MATCHING production --scope peer-probe      # plain (non-secret) value 1, Production only
+# deploy the SAME frontend code that is live (main has no frontend change since the deployed PR #4 merge):
+export VERCEL_ORG_ID=<orgId from .vercel/project.json> VERCEL_PROJECT_ID=<projectId from .vercel/project.json>
+cd /c/Users/deine/dev/uxbarter-release && MSYS_NO_PATHCONV=1 npx vercel deploy --target production --scope peer-probe --yes
+```
+Verify afterwards: `curl -s https://uxbarter.vercel.app/ | grep -o 'assets/index-[^"]*\.js'` then grep that bundle for `ai-match`; open /profile (the consent card + "Check my professional answers" appear only for consenting users) and /discover with a consenting test identity.
+**Rollback, fastest first:** (1) instant: `npx vercel promote <URL of the previous production deployment> --scope peer-probe` (the build WITHOUT the flag; no rebuild); (2) `AI_ASSESSMENT_ENABLED=false` and `AI_MATCHING_ENABLED=false` via `npx supabase secrets set ... --remote --yes`; (3) `npx vercel env rm VITE_AI_MATCHING production --yes --scope peer-probe` and redeploy; (4) revoke the OpenAI key. Consent withdrawal by users keeps working in every state.
+**Abandoned test identities:** `docs/cleanup-abandoned-test-identity.sql` (tested in `supabase/tests/cleanup_identity.mjs`, NOT run; withdraws consent and, optionally, deletes the answers of one orphan identity; never touches credits or the ledger).
