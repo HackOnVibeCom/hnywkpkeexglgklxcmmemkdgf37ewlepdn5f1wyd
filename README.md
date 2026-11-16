@@ -76,6 +76,21 @@ Safety and privacy controls: explicit consent card (off by default; withdrawal s
 
 Every credit movement is a row in an append-only ledger with unique indexes, so double-spend and double-reward are impossible even if application code regresses.
 
+## Future Monetization & Business Model
+
+**Today:** UXBarter runs a pure peer-to-peer credit economy. Users earn credits by testing other people's products and through qualifying referrals, and spend them to get their own product tested. There is **no payment flow in the product**: nothing can be bought, and no one is charged.
+
+**Planned (not implemented):** two *optional* paid channels for people who want feedback without testing other products first:
+
+1. **Pay-as-you-go credit purchases** — buy testing credits directly, for founders who need usability feedback but don't have time to test other products.
+2. **Subscription plans** — recurring plans with a fixed monthly allocation of testing credits, for founders and teams who need regular usability testing.
+
+**How this fits the model**
+
+* **The peer-to-peer exchange stays the foundation.** Testing and qualifying referrals are what drive UXBarter's [Zero-CAC](#zero-cac-growth-mechanism) organic acquisition. Paid options are an added convenience, never a requirement: the free, earn-by-testing path remains fully usable.
+* **Zero-CAC is a growth strategy, not a claim of zero cost.** It means UXBarter does not pay for customer acquisition (no ads or paid channels). Operating the service (hosting, database, AI usage) has real costs, and subscriptions and credit purchases are the planned way to fund them.
+* **No details are committed yet.** This repository does not state pricing, credit quantities, launch dates, revenue, conversion rates or traction, and none should be added until they are real and measured.
+
 ## Technology
 
 | Layer | Choice |
